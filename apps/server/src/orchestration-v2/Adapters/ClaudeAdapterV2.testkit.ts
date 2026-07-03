@@ -295,6 +295,11 @@ function isClaudeSdkReplayMessage(frame: unknown): frame is SDKMessage {
     type === "user" ||
     type === "result" ||
     type === "system" ||
+    // Partial-assistant stream events are ignored by the adapter's message
+    // pipeline but announce provider-initiated turn wakeups, matching the
+    // recorded transcripts where message_start precedes the first complete
+    // assistant message by several seconds.
+    type === "stream_event" ||
     type === "rate_limit_event"
   );
 }

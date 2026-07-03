@@ -37,6 +37,11 @@ import { OrchestratorV2, type OrchestratorV2Error } from "../Orchestrator.ts";
 import { ProviderAdapterRegistryV2 } from "../ProviderAdapterRegistry.ts";
 import { layer as providerEventIngestorLayer } from "../ProviderEventIngestor.ts";
 import { layerWithOptions as providerSessionManagerLayerWithOptions } from "../ProviderSessionManager.ts";
+import {
+  relayLayer as providerWakeupRelayLayer,
+  runWakeupDispatcher,
+  wakeupObserverLive,
+} from "../ProviderWakeupService.ts";
 import { layer as providerSwitchServiceLayer } from "../ProviderSwitchService.ts";
 import { layer as providerTurnControlServiceLayer } from "../ProviderTurnControlService.ts";
 import { layer as providerTurnStartServiceLayer } from "../ProviderTurnStartService.ts";
@@ -267,6 +272,9 @@ export function makeOrchestratorV2ReplayLayerWithRegistry<Error>(
     idAllocatorLayer,
     providerEventIngestorProvided,
   );
+  const providerWakeupObserverProvided = wakeupObserverLive.pipe(
+    Layer.provide(providerWakeupRelayLayer),
+  );
   const providerSessionManagerProvided = providerSessionManagerLayerWithOptions({
     configureMcp: false,
   }).pipe(
@@ -277,6 +285,7 @@ export function makeOrchestratorV2ReplayLayerWithRegistry<Error>(
         idAllocatorLayer,
         mcpSessionRegistryTestLayer,
         storesLayer,
+        providerWakeupObserverProvided,
       ),
     ),
   );
@@ -378,7 +387,13 @@ export function makeOrchestratorV2ReplayLayerWithRegistry<Error>(
     Effect.gen(function* () {
       const orchestrator = yield* OrchestratorV2;
       yield* runEffectWorkerDaemon.pipe(Effect.forkScoped);
+      // Provider-initiated turn wakeups (adapter `turn.wakeup` announcements)
+      // are dispatched by the same daemon wiring the production runtime uses.
+      yield* runWakeupDispatcher.pipe(
+        Effect.provideService(OrchestratorV2, orchestrator),
+        Effect.forkScoped,
+      );
       return orchestrator;
     }),
-  ).pipe(Layer.provide(replayRuntime));
+  ).pipe(Layer.provide(Layer.merge(replayRuntime, providerWakeupRelayLayer)));
 }

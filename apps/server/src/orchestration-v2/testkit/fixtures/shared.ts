@@ -38,6 +38,9 @@ export const TOOL_CALL_READ_ONLY_WORKSPACE_ROOT = "/tmp/claude-replay-tool_call_
 export const TOOL_CALL_READ_ONLY_PROMPT = `Read ${TOOL_CALL_READ_ONLY_WORKSPACE_ROOT}/package.json and ${TOOL_CALL_READ_ONLY_WORKSPACE_ROOT}/tsconfig.json, then answer exactly: read only tool fixture complete`;
 export const CLAUDE_LOCAL_BASH_TASK_PROMPT =
   "Run a local Bash typecheck command, then answer exactly: claude local bash task fixture complete";
+export const CLAUDE_PROVIDER_WAKEUP_PROMPT =
+  "Start a background watcher that polls for new bot reviews, then confirm you are waiting.";
+export const CLAUDE_PROVIDER_WAKEUP_FOLLOW_UP = "Wrap up with a summary.";
 export const TOOL_CALL_WRITE_PROMPT =
   "Create or overwrite .codex-probe-write-action.txt with exactly this text: codex app-server approval fixture. Use a local shell command or file edit only, then briefly report what happened. Do not read package metadata, use GitHub, use web, or use MCP.";
 export const MESSAGE_STEERING_INITIAL_PROMPT =
@@ -192,6 +195,16 @@ export type OrchestratorFixtureInputStep =
       readonly type: "rollback";
       readonly checkpointScopeSuffix: string;
       readonly checkpointSuffix: string;
+    }
+  | {
+      /**
+       * Wait for a provider-initiated run (minted asynchronously by the
+       * wakeup dispatcher reacting to an adapter `turn.wakeup` event, never
+       * by a dispatched command) to reach a status.
+       */
+      readonly type: "await_provider_wakeup_run";
+      readonly runOrdinal: number;
+      readonly status?: OrchestrationV2RunStatus;
     };
 
 export interface OrchestratorFixtureInput {
@@ -529,6 +542,14 @@ export function materializeFixtureInput(input: {
           };
           steps.push({ type: "advance_clock", duration: "1 millis" });
           steps.push({ type: "await_thread_idle", threadId: ids.threadId });
+          break;
+        case "await_provider_wakeup_run":
+          steps.push({
+            type: "await_run_status",
+            threadId: ids.threadId,
+            runId: runIdFor(step.runOrdinal),
+            status: step.status ?? "completed",
+          });
           break;
         case "steer":
           messageIndex += 1;

@@ -252,6 +252,10 @@ export const layer: Layer.Layer<ProviderEventIngestorV2, never, EventSinkV2 | Id
                   }),
                 }),
               ];
+            case "turn.wakeup":
+              // Control signal for the session-lifetime wakeup watcher; it is
+              // acted on (a provider-initiated run gets minted), not projected.
+              return [];
           }
         }).pipe(
           Effect.mapError(

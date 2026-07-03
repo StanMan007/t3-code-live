@@ -33,6 +33,7 @@ import { CheckpointServiceV2 } from "./CheckpointService.ts";
 import { EventSinkV2 } from "./EventSink.ts";
 import { IdAllocatorV2, type IdAllocatorV2Shape } from "./IdAllocator.ts";
 import type {
+  ProviderAdapterV2Error,
   ProviderAdapterV2Event,
   ProviderAdapterV2RuntimePolicy,
   ProviderAdapterV2SessionRuntime,
@@ -162,18 +163,35 @@ export function routeProviderEvent(
       return belongs ? [true, addProviderTurn(event.providerTurn.id, isRoot)] : [false, state];
     }
     case "node.updated": {
-      const belongs = ownsRun(event.node.runId) || ownsChildThread(event.node.threadId);
-      if (!belongs || event.node.providerThreadId === null) {
+      // Same-provider-thread updates for earlier runs are legitimate: a
+      // backgrounded command spawned by a previous turn completes during this
+      // run (often a wakeup run) and the adapter re-emits the original
+      // node/item with its terminal status.
+      const nodeProviderThreadId = event.node.providerThreadId ?? null;
+      const belongs =
+        ownsRun(event.node.runId) ||
+        ownsChildThread(event.node.threadId) ||
+        (nodeProviderThreadId !== null &&
+          state.ownedProviderThreadIds.has(nodeProviderThreadId));
+      if (!belongs || nodeProviderThreadId === null) {
         return [belongs, state];
       }
-      return [true, addProviderThread(event.node.providerThreadId)];
+      return [true, addProviderThread(nodeProviderThreadId)];
     }
     case "subagent.updated":
       return [ownsRun(event.subagent.runId) || ownsChildThread(event.subagent.threadId), state];
     case "message.updated":
       return [ownsRun(event.message.runId) || ownsChildThread(event.message.threadId), state];
-    case "turn_item.updated":
-      return [ownsRun(event.turnItem.runId) || ownsChildThread(event.turnItem.threadId), state];
+    case "turn_item.updated": {
+      const itemProviderThreadId = event.turnItem.providerThreadId ?? null;
+      return [
+        ownsRun(event.turnItem.runId) ||
+          ownsChildThread(event.turnItem.threadId) ||
+          (itemProviderThreadId !== null &&
+            state.ownedProviderThreadIds.has(itemProviderThreadId)),
+        state,
+      ];
+    }
     case "plan.updated":
       return [ownsRun(event.plan.runId) || ownsChildThread(event.plan.threadId), state];
     case "runtime_request.updated":
@@ -185,6 +203,10 @@ export function routeProviderEvent(
       ];
     case "turn.terminal":
       return [event.providerTurnId === state.rootProviderTurnId, state];
+    case "turn.wakeup":
+      // Wakeups are handled by the session-lifetime wakeup watcher, never by
+      // an active run's ingestion pipeline.
+      return [false, state];
   }
 }
 
@@ -244,6 +266,12 @@ export interface RunExecutionServiceV2StartRootRunInput {
   readonly message: ProviderAdapterV2TurnMessage;
   readonly modelSelection: ModelSelection;
   readonly runtimePolicy: ProviderAdapterV2RuntimePolicy;
+  /**
+   * "prompt" (default) sends the message to the provider via `startTurn`.
+   * "attach" adopts a provider-initiated turn that is already in flight via
+   * `attachTurn` — used by the wakeup watcher; nothing is sent to the provider.
+   */
+  readonly turnDelivery?: "prompt" | "attach";
 }
 
 export interface RunExecutionServiceV2Shape {
@@ -755,21 +783,30 @@ export const layer: Layer.Layer<
             return;
           }
 
-          yield* input.session
-            .startTurn({
-              appThread: input.appThread,
-              threadId: input.run.threadId,
-              runId: input.run.id,
-              runOrdinal: input.run.ordinal,
-              providerTurnOrdinal: input.providerTurnOrdinal,
-              attemptId: input.attemptId,
-              rootNodeId: input.rootNode.id,
-              providerThread: input.providerThread,
-              message: input.message,
-              modelSelection: input.modelSelection,
-              runtimePolicy: input.runtimePolicy,
-            })
-            .pipe(
+          const turnInput = {
+            appThread: input.appThread,
+            threadId: input.run.threadId,
+            runId: input.run.id,
+            runOrdinal: input.run.ordinal,
+            providerTurnOrdinal: input.providerTurnOrdinal,
+            attemptId: input.attemptId,
+            rootNodeId: input.rootNode.id,
+            providerThread: input.providerThread,
+            message: input.message,
+            modelSelection: input.modelSelection,
+            runtimePolicy: input.runtimePolicy,
+          };
+          const deliverTurn: Effect.Effect<void, ProviderAdapterV2Error> =
+            input.turnDelivery === "attach"
+              ? input.session.attachTurn === undefined
+                ? Effect.die(
+                    new Error(
+                      `Provider session ${input.providerSessionId} emitted a turn wakeup but its adapter does not implement attachTurn.`,
+                    ),
+                  )
+                : input.session.attachTurn(turnInput)
+              : input.session.startTurn(turnInput);
+          yield* deliverTurn.pipe(
               Effect.catchCause((cause) =>
                 Effect.logError("orchestration V2 provider turn start failed", {
                   runId: input.run.id,

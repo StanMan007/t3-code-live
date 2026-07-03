@@ -626,6 +626,97 @@ describe("deriveMessagesTimelineRows", () => {
     ]);
   });
 
+  it("keeps still-running background work visible when the turn settles", () => {
+    // A Bash command with run_in_background outlives its turn: the run settles
+    // while the command_execution item stays inProgress until the task's
+    // lifecycle completes it (possibly during a later provider wakeup).
+    const backgroundWorkEntry = (toolLifecycleStatus: "inProgress" | "completed") => ({
+      id: "background-command-entry",
+      kind: "work" as const,
+      createdAt: "2026-01-01T00:00:08Z",
+      entry: {
+        id: "background-command",
+        createdAt: "2026-01-01T00:00:08Z",
+        runId: "turn-1" as never,
+        label: "sleep 75 && echo watcher-done",
+        tone: "tool" as const,
+        toolLifecycleStatus,
+      },
+    });
+    const timelineEntries = (toolLifecycleStatus: "inProgress" | "completed") => [
+      {
+        id: "user-entry",
+        kind: "message" as const,
+        createdAt: "2026-01-01T00:00:00Z",
+        message: {
+          id: "user-1" as never,
+          role: "user" as const,
+          text: "Start a background watcher",
+          runId: null,
+          createdAt: "2026-01-01T00:00:00Z",
+          updatedAt: "2026-01-01T00:00:00Z",
+          streaming: false,
+        },
+      },
+      {
+        id: "assistant-thought-entry",
+        kind: "message" as const,
+        createdAt: "2026-01-01T00:00:05Z",
+        message: {
+          id: "assistant-thought" as never,
+          role: "assistant" as const,
+          text: "Starting the watcher.",
+          runId: "turn-1" as never,
+          createdAt: "2026-01-01T00:00:05Z",
+          updatedAt: "2026-01-01T00:00:06Z",
+          streaming: false,
+        },
+      },
+      backgroundWorkEntry(toolLifecycleStatus),
+      {
+        id: "assistant-final-entry",
+        kind: "message" as const,
+        createdAt: "2026-01-01T00:00:10Z",
+        message: {
+          id: "assistant-final" as never,
+          role: "assistant" as const,
+          text: "Waiting for the watcher to finish.",
+          runId: "turn-1" as never,
+          createdAt: "2026-01-01T00:00:10Z",
+          updatedAt: "2026-01-01T00:00:12Z",
+          streaming: false,
+        },
+      },
+    ];
+
+    const rowsWhileRunning = deriveMessagesTimelineRows({
+      timelineEntries: timelineEntries("inProgress"),
+      isWorking: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+    });
+    expect(rowsWhileRunning.map((row) => row.id)).toEqual([
+      "user-entry",
+      "turn-fold:turn-1",
+      "background-command-entry",
+      "assistant-final-entry",
+    ]);
+
+    const rowsAfterCompletion = deriveMessagesTimelineRows({
+      timelineEntries: timelineEntries("completed"),
+      isWorking: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+    });
+    expect(rowsAfterCompletion.map((row) => row.id)).toEqual([
+      "user-entry",
+      "turn-fold:turn-1",
+      "assistant-final-entry",
+    ]);
+  });
+
   it("collapses only output from a superseded V2 attempt within the active logical run", () => {
     const runId = "run-steered" as never;
     const supersededAttemptId = "attempt-1" as never;

@@ -26,6 +26,11 @@ import { layer as projectionMaintenanceLayer } from "./ProjectionMaintenance.ts"
 import { layerFromProviderInstanceRegistry as providerAdapterRegistryLayerFromProviderInstances } from "./ProviderAdapterRegistry.ts";
 import { layer as providerEventIngestorLayer } from "./ProviderEventIngestor.ts";
 import { layer as providerSessionManagerLayer } from "./ProviderSessionManager.ts";
+import {
+  relayLayer as providerWakeupRelayLayer,
+  wakeupDispatcherDaemonLayer,
+  wakeupObserverLive,
+} from "./ProviderWakeupService.ts";
 import { layer as providerRuntimeRecoveryLayer } from "./ProviderRuntimeRecoveryService.ts";
 import { layer as providerSwitchServiceLayer } from "./ProviderSwitchService.ts";
 import { layer as providerTurnControlServiceLayer } from "./ProviderTurnControlService.ts";
@@ -81,6 +86,10 @@ const providerSwitchServiceProvided = providerSwitchServiceLayer.pipe(
   Layer.provide(providerAdapterRegistryProvided),
 );
 
+const providerWakeupObserverProvided = wakeupObserverLive.pipe(
+  Layer.provide(providerWakeupRelayLayer),
+);
+
 const providerSessionManagerProvided = providerSessionManagerLayer.pipe(
   Layer.provide(
     Layer.mergeAll(
@@ -88,6 +97,7 @@ const providerSessionManagerProvided = providerSessionManagerLayer.pipe(
       eventSinkProvided,
       idAllocatorLayer,
       projectionStoreLayer,
+      providerWakeupObserverProvided,
     ),
   ),
 );
@@ -222,6 +232,10 @@ const scheduledTaskProvided = scheduledTaskServiceLayer.pipe(
   Layer.provide(Layer.mergeAll(threadLaunchProvided, threadManagementProvided)),
 );
 
+const providerWakeupDispatcherProvided = wakeupDispatcherDaemonLayer.pipe(
+  Layer.provide(Layer.merge(providerWakeupRelayLayer, orchestratorProvided)),
+);
+
 export const OrchestrationV2LayerLive = Layer.mergeAll(
   orchestratorProvided,
   threadManagementProvided,
@@ -229,6 +243,7 @@ export const OrchestrationV2LayerLive = Layer.mergeAll(
   providerSessionManagerProvided,
   providerRuntimeRecoveryProvided,
   projectionMaintenanceProvided,
+  providerWakeupDispatcherProvided,
 );
 
 export const OrchestrationV2ProductionLayerLive = Layer.mergeAll(

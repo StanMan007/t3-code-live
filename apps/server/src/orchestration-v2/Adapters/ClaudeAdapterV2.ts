@@ -55,6 +55,7 @@ import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
+import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
@@ -94,6 +95,7 @@ import {
   type ProviderAdapterV2SessionRuntime,
   type ProviderAdapterV2SteerInput,
   type ProviderAdapterV2TurnInput,
+  type ProviderTurnWakeupOrigin,
 } from "../ProviderAdapter.ts";
 import {
   ProviderAdapterDriverCreateError,
@@ -1761,6 +1763,16 @@ interface ActiveClaudeTurnContext {
   readonly input: ProviderAdapterV2TurnInput;
   readonly nativeTurnId: string;
   nativeMessageCursor: string | null;
+  /**
+   * Set when a ScheduleWakeup tool call succeeds in this turn: the following
+   * `result` will carry stop_reason "tool_use" and the SDK re-invokes the
+   * agent at `scheduledFor`. The turn is then held open (provider turn
+   * `waiting`) instead of finalized, so the sleep/wake poll loop stays one
+   * run instead of a run per wakeup.
+   */
+  pendingScheduledWakeup: { readonly scheduledFor?: number } | null;
+  /** The turn yielded on a scheduled wakeup and is waiting to be re-invoked. */
+  waitingForWakeup: boolean;
   readonly providerTurnId: OrchestrationV2ProviderTurn["id"];
   readonly providerTurnOrdinal: number;
   readonly startedAt: DateTime.Utc;
@@ -1794,6 +1806,58 @@ interface ClaudeLiveQueryContext {
   readonly queryPolicyKey: string;
   readonly selectionKey: string;
   readonly closed: Deferred.Deferred<void, never>;
+}
+
+/**
+ * SDK activity observed while no orchestrator-requested turn is active. The
+ * Claude Agent SDK resumes sessions on its own (background task notifications,
+ * scheduled wakeups re-invoke the agent after the previous turn's result), so
+ * the adapter buffers that activity, announces it once via a `turn.wakeup`
+ * event, and replays the buffer when the orchestrator attaches a
+ * provider-initiated run through `attachTurn`.
+ */
+interface PendingClaudeWakeup {
+  readonly query: ClaudeAgentSdkQuerySession;
+  origin: ProviderTurnWakeupOrigin;
+  announced: boolean;
+  readonly bufferedMessages: Array<SDKMessage>;
+  droppedMessageCount: number;
+}
+
+const CLAUDE_WAKEUP_BUFFER_LIMIT = 4096;
+const CLAUDE_WAKEUP_ORIGIN_DETAIL_LIMIT = 280;
+
+/**
+ * A Bash command the agent ran with `run_in_background`: its tool result
+ * returns immediately (carrying `backgroundTaskId`) while the command keeps
+ * running — often across turn boundaries. The emitted node/turn item stay
+ * `running` and are re-emitted with their terminal status when the matching
+ * `task_updated`/`task_notification` arrives (possibly during a later,
+ * provider-initiated wakeup run — routing accepts same-provider-thread
+ * updates for earlier runs).
+ */
+interface ClaudeBackgroundCommandRef {
+  readonly taskId: string;
+  readonly node: OrchestrationV2ExecutionNode;
+  readonly turnItem: OrchestrationV2TurnItem;
+  /**
+   * A terminal transition was already emitted (task_updated carries the
+   * status but no summary; the task_notification that follows enriches the
+   * item's output with the summary and consumes the ref).
+   */
+  readonly terminal: boolean;
+}
+
+function claudeBackgroundTaskIdFromSdkMessage(message: SDKMessage): string | undefined {
+  if (message.type !== "user") {
+    return undefined;
+  }
+  const structuredResult = (message as { readonly tool_use_result?: unknown }).tool_use_result;
+  if (typeof structuredResult !== "object" || structuredResult === null) {
+    return undefined;
+  }
+  const taskId = Reflect.get(structuredResult, "backgroundTaskId");
+  return typeof taskId === "string" && taskId.length > 0 ? taskId : undefined;
 }
 
 interface ActiveClaudeToolCall {
@@ -1851,6 +1915,15 @@ export function makeClaudeAdapterV2(
         const interruptedTurns = yield* Ref.make(new Set<OrchestrationV2ProviderTurn["id"]>());
         const steeredTurns = yield* Ref.make(new Set<OrchestrationV2ProviderTurn["id"]>());
         const queryContext = yield* Ref.make<ClaudeLiveQueryContext | null>(null);
+        const pendingWakeup = yield* Ref.make<PendingClaudeWakeup | null>(null);
+        const lastProviderThreadId = yield* Ref.make<OrchestrationV2ProviderThread["id"] | null>(
+          null,
+        );
+        const backgroundCommands = yield* Ref.make(new Map<string, ClaudeBackgroundCommandRef>());
+        // Serializes the SDK message pump against attachTurn so replayed wakeup
+        // buffers cannot interleave with live messages.
+        const sdkMessageGate = yield* Semaphore.make(1);
+        const sessionThreadId = input.threadId;
         const openedNativeThreads = yield* Ref.make(new Set<string>());
         const itemOrdinals = yield* Ref.make(new Map<string, number>());
         const nextItemOrdinalsByTurn = yield* Ref.make(new Map<string, number>());
@@ -2046,6 +2119,91 @@ export function makeClaudeAdapterV2(
             driver: CLAUDE_PROVIDER,
             turnItem: artifacts.turnItem,
           });
+        });
+
+        /**
+         * Re-emit a backgrounded command's original node/turn item with its
+         * terminal status once its task lifecycle concludes. Idempotent: the
+         * ref is consumed on first completion (task_updated and
+         * task_notification both report the same terminal transition).
+         */
+        const completeBackgroundCommand = Effect.fnUntraced(function* (input: {
+          readonly taskId: string;
+          readonly status: "completed" | "failed";
+          readonly detail?: string;
+          /** task_notification carries the final summary and retires the ref. */
+          readonly consume: boolean;
+        }) {
+          const entry = (yield* Ref.get(backgroundCommands)).get(input.taskId);
+          if (entry === undefined) {
+            return;
+          }
+          const detail = input.detail?.trim() ?? "";
+          if (entry.terminal && detail.length === 0) {
+            return;
+          }
+          const completedAt = yield* DateTime.now;
+          const node: OrchestrationV2ExecutionNode = {
+            ...entry.node,
+            status: input.status,
+            completedAt,
+          };
+          const completedItem = {
+            ...entry.turnItem,
+            status: input.status,
+            completedAt,
+            updatedAt: completedAt,
+          } as OrchestrationV2TurnItem;
+          const turnItem: OrchestrationV2TurnItem =
+            completedItem.type === "command_execution" &&
+            detail.length > 0 &&
+            !(completedItem.output ?? "").includes(detail)
+              ? {
+                  ...completedItem,
+                  output:
+                    completedItem.output === undefined || completedItem.output.length === 0
+                      ? detail
+                      : `${completedItem.output}\n${detail}`,
+                }
+              : completedItem;
+          yield* emitToolCallArtifacts({ node, turnItem });
+          yield* Ref.update(backgroundCommands, (current) => {
+            const next = new Map(current);
+            if (input.consume) {
+              next.delete(input.taskId);
+            } else {
+              next.set(input.taskId, { taskId: input.taskId, node, turnItem, terminal: true });
+            }
+            return next;
+          });
+        });
+
+        const completeBackgroundCommandFromTaskMessage = Effect.fnUntraced(function* (
+          message: SDKMessage,
+        ) {
+          if (message.type !== "system") {
+            return;
+          }
+          if (message.subtype === "task_notification") {
+            yield* completeBackgroundCommand({
+              taskId: message.task_id,
+              status: message.status === "completed" ? "completed" : "failed",
+              detail: message.summary,
+              consume: true,
+            });
+            return;
+          }
+          if (message.subtype === "task_updated") {
+            const patchStatus = message.patch.status;
+            if (patchStatus === "completed" || patchStatus === "failed" || patchStatus === "killed") {
+              yield* completeBackgroundCommand({
+                taskId: message.task_id,
+                status: patchStatus === "completed" ? "completed" : "failed",
+                ...(message.patch.error === undefined ? {} : { detail: message.patch.error }),
+                consume: false,
+              });
+            }
+          }
         });
 
         const updateClaudeSubagentNode = Effect.fnUntraced(function* (input: {
@@ -2755,7 +2913,89 @@ export function makeClaudeAdapterV2(
           }
         });
 
-        const handleSdkMessage = Effect.fnUntraced(function* (input: {
+        /**
+         * SDK activity with no active orchestrator turn: the SDK resumed the
+         * session on its own (e.g. a background task notification re-invoked
+         * the agent after the previous turn's result). Buffer the activity and
+         * announce it once via `turn.wakeup` so the wakeup watcher can mint a
+         * provider-initiated run and attach to it.
+         */
+        const trackWakeupSdkMessage = Effect.fnUntraced(function* (wakeupInput: {
+          readonly query: ClaudeAgentSdkQuerySession;
+          readonly message: SDKMessage;
+        }) {
+          const providerThreadId = yield* Ref.get(lastProviderThreadId);
+          if (providerThreadId === null) {
+            // No turn has run in this session yet, so there is nothing for a
+            // wakeup run to bind to; this is pre-first-turn protocol noise.
+            return;
+          }
+          const message = wakeupInput.message;
+          const existing = yield* Ref.get(pendingWakeup);
+          const pending: PendingClaudeWakeup =
+            existing !== null && existing.query === wakeupInput.query
+              ? existing
+              : {
+                  query: wakeupInput.query,
+                  origin: { kind: "unknown" },
+                  announced: false,
+                  bufferedMessages: [],
+                  droppedMessageCount: 0,
+                };
+          if (
+            pending.origin.kind === "unknown" &&
+            message.type === "system" &&
+            message.subtype === "task_notification"
+          ) {
+            const detail = message.summary.trim().slice(0, CLAUDE_WAKEUP_ORIGIN_DETAIL_LIMIT);
+            pending.origin = {
+              kind: "task_notification",
+              nativeTaskId: message.task_id,
+              ...(detail.length === 0 ? {} : { detail }),
+            };
+          }
+          // Partial-assistant stream events are ignored by processSdkMessage
+          // (the adapter consumes complete assistant snapshots), so they are
+          // not worth buffering — but they DO prove a turn is underway, so
+          // they still drive the announcement below.
+          if (message.type !== "stream_event") {
+            if (pending.bufferedMessages.length >= CLAUDE_WAKEUP_BUFFER_LIMIT) {
+              pending.droppedMessageCount += 1;
+              if (pending.droppedMessageCount === 1) {
+                yield* Effect.logWarning("orchestration-v2.claude-wakeup-buffer-overflow", {
+                  providerSessionId: input.providerSessionId,
+                  threadId: sessionThreadId,
+                  providerThreadId,
+                });
+              }
+            } else {
+              pending.bufferedMessages.push(message);
+            }
+          }
+          yield* Ref.set(pendingWakeup, pending);
+          // System messages alone (init, status, task bookkeeping) do not
+          // prove a turn is underway; announce on the first real activity —
+          // in recorded wakeups that is the message_start stream event, ~4s
+          // before the first complete assistant message.
+          if (!pending.announced && message.type !== "system") {
+            pending.announced = true;
+            yield* Effect.logInfo("orchestration-v2.claude-turn-wakeup", {
+              providerSessionId: input.providerSessionId,
+              threadId: sessionThreadId,
+              providerThreadId,
+              origin: pending.origin,
+            });
+            yield* emitProviderEvent({
+              type: "turn.wakeup",
+              driver: CLAUDE_PROVIDER,
+              threadId: sessionThreadId,
+              providerThreadId,
+              origin: pending.origin,
+            });
+          }
+        });
+
+        const processSdkMessage = Effect.fnUntraced(function* (input: {
           readonly query: ClaudeAgentSdkQuerySession;
           readonly message: SDKMessage;
         }) {
@@ -2767,11 +3007,18 @@ export function makeClaudeAdapterV2(
           const message = input.message;
           const context = yield* Ref.get(activeTurn);
           if (context === null) {
+            yield* trackWakeupSdkMessage(input);
             return;
           }
 
           if (message.type === "assistant") {
             context.nativeMessageCursor = message.uuid;
+          }
+
+          if (context.waitingForWakeup && message.type === "assistant") {
+            // Scheduled wakeup fired: the continuation streams into this
+            // held-open turn (the provider turn stayed `running` throughout).
+            context.waitingForWakeup = false;
           }
 
           if (message.type === "system" && message.subtype === "task_started") {
@@ -2802,6 +3049,12 @@ export function makeClaudeAdapterV2(
             }
           }
 
+          // Backgrounded commands (local_bash tasks spawned with
+          // run_in_background) are tracked session-level and complete via
+          // task lifecycle messages — independent of subagent bookkeeping and
+          // of which turn the lifecycle message arrives in.
+          yield* completeBackgroundCommandFromTaskMessage(message);
+
           if (message.type === "system" && message.subtype === "task_notification") {
             if (!context.ignoredTaskIds.has(message.task_id)) {
               yield* updateClaudeSubagentNode({
@@ -2813,6 +3066,31 @@ export function makeClaudeAdapterV2(
                   message.status === "completed"
                     ? "completed"
                     : message.status === "stopped"
+                      ? "cancelled"
+                      : "failed",
+              });
+            }
+          }
+
+          if (message.type === "system" && message.subtype === "task_updated") {
+            // Status patches carry terminal transitions (completed/failed/
+            // killed) that task_notification does not always repeat — killed
+            // and failed tasks in particular must not be dropped silently.
+            const patchStatus = message.patch.status;
+            if (
+              patchStatus !== undefined &&
+              !context.ignoredTaskIds.has(message.task_id) &&
+              context.subagentsByTaskId.has(message.task_id) &&
+              (patchStatus === "completed" || patchStatus === "failed" || patchStatus === "killed")
+            ) {
+              yield* updateClaudeSubagentNode({
+                context,
+                taskId: message.task_id,
+                ...(message.patch.error === undefined ? {} : { result: message.patch.error }),
+                status:
+                  patchStatus === "completed"
+                    ? "completed"
+                    : patchStatus === "killed"
                       ? "cancelled"
                       : "failed",
               });
@@ -2856,6 +3134,13 @@ export function makeClaudeAdapterV2(
                 parentToolUseId,
               }));
             const completedAt = yield* DateTime.now;
+            // A tool result carrying backgroundTaskId means the command keeps
+            // running detached (Bash run_in_background): the item stays
+            // `running` and completes via its task lifecycle later — possibly
+            // in a different (wakeup) run.
+            const backgroundTaskId = isClaudeToolResultError(toolResult)
+              ? undefined
+              : claudeBackgroundTaskIdFromSdkMessage(message);
             const artifacts = buildToolCallArtifacts({
               context,
               nativeItemId: toolCall.nativeItemId,
@@ -2868,11 +3153,43 @@ export function makeClaudeAdapterV2(
               parentNodeId: toolCall.parentNodeId,
               ordinal: toolCall.ordinal,
               output,
-              status: isClaudeToolResultError(toolResult) ? "failed" : "completed",
+              status: isClaudeToolResultError(toolResult)
+                ? "failed"
+                : backgroundTaskId !== undefined
+                  ? "running"
+                  : "completed",
               startedAt: toolCall.startedAt,
               updatedAt: completedAt,
             });
             yield* emitToolCallArtifacts(artifacts);
+            if (backgroundTaskId !== undefined) {
+              yield* Ref.update(backgroundCommands, (current) => {
+                const next = new Map(current);
+                next.set(backgroundTaskId, {
+                  taskId: backgroundTaskId,
+                  node: artifacts.node,
+                  turnItem: artifacts.turnItem,
+                  terminal: false,
+                });
+                return next;
+              });
+            }
+            if (toolCall.toolName === "ScheduleWakeup" && !isClaudeToolResultError(toolResult)) {
+              // The SDK re-invokes the agent when the wakeup fires; the
+              // upcoming result (stop_reason "tool_use") must not finalize
+              // the turn. scheduledFor comes from the tool's structured
+              // output: { scheduledFor, clampedDelaySeconds, wasClamped }.
+              const structuredResult =
+                message.type === "user"
+                  ? (message as { readonly tool_use_result?: unknown }).tool_use_result
+                  : undefined;
+              const scheduledFor =
+                typeof structuredResult === "object" && structuredResult !== null
+                  ? Reflect.get(structuredResult, "scheduledFor")
+                  : undefined;
+              context.pendingScheduledWakeup =
+                typeof scheduledFor === "number" ? { scheduledFor } : {};
+            }
             context.toolCalls.delete(toolCall.nativeItemId);
           }
 
@@ -2904,6 +3221,27 @@ export function makeClaudeAdapterV2(
             if (!interrupted && wasSteered && isClaudeActiveSteeringAbortResult(message)) {
               return;
             }
+            if (
+              !interrupted &&
+              message.subtype === "success" &&
+              context.pendingScheduledWakeup !== null
+            ) {
+              // The turn yielded on ScheduleWakeup (result stop_reason
+              // "tool_use"): the SDK re-invokes this session at scheduledFor
+              // and the continuation streams into this same turn. Hold the
+              // run open as `waiting` instead of finalizing so a sleep/wake
+              // poll loop stays a single run.
+              const scheduledFor = context.pendingScheduledWakeup.scheduledFor;
+              context.pendingScheduledWakeup = null;
+              context.waitingForWakeup = true;
+              yield* Effect.logInfo("orchestration-v2.claude-turn-waiting-for-wakeup", {
+                threadId: context.input.threadId,
+                runId: context.input.runId,
+                providerTurnId: context.providerTurnId,
+                ...(scheduledFor === undefined ? {} : { scheduledFor }),
+              });
+              return;
+            }
             yield* Ref.update(steeredTurns, (current) => {
               const next = new Set(current);
               next.delete(context.providerTurnId);
@@ -2925,6 +3263,11 @@ export function makeClaudeAdapterV2(
             });
           }
         });
+
+        const handleSdkMessage = (messageInput: {
+          readonly query: ClaudeAgentSdkQuerySession;
+          readonly message: SDKMessage;
+        }) => sdkMessageGate.withPermits(1)(processSdkMessage(messageInput));
 
         const canUseToolEffect = Effect.fn("ClaudeAdapterV2.canUseTool")(function* (
           toolName: Parameters<CanUseTool>[0],
@@ -3099,6 +3442,9 @@ export function makeClaudeAdapterV2(
                 const ownsLiveQuery = yield* Ref.modify(queryContext, (current) =>
                   current?.query === querySession ? [true, null] : [false, current],
                 );
+                yield* Ref.update(pendingWakeup, (current) =>
+                  current?.query === querySession ? null : current,
+                );
                 if (ownsLiveQuery) {
                   yield* finalizeActiveTurnAfterQueryExit(
                     exit._tag === "Failure" ? exit.cause : undefined,
@@ -3133,6 +3479,8 @@ export function makeClaudeAdapterV2(
               input: turnInput,
               nativeTurnId,
               nativeMessageCursor: null,
+              pendingScheduledWakeup: null,
+              waitingForWakeup: false,
               providerTurnId,
               providerTurnOrdinal,
               startedAt,
@@ -3157,7 +3505,32 @@ export function makeClaudeAdapterV2(
               fileSystem,
             });
             const querySession = yield* openQuery(turnInput, nativeThreadId);
+            const supersededWakeup = yield* Ref.getAndSet(pendingWakeup, null);
+            if (supersededWakeup !== null && supersededWakeup.announced) {
+              // A user-requested turn wins over an unclaimed wakeup: the
+              // in-flight provider activity folds into this turn's stream and
+              // the buffered prefix is dropped.
+              yield* Effect.logWarning("orchestration-v2.claude-wakeup-superseded-by-turn", {
+                providerSessionId: input.providerSessionId,
+                threadId: turnInput.threadId,
+                runId: turnInput.runId,
+                bufferedMessageCount: supersededWakeup.bufferedMessages.length,
+              });
+            }
             yield* Ref.set(activeTurn, context);
+            yield* Ref.set(lastProviderThreadId, turnInput.providerThread.id);
+            if (supersededWakeup !== null) {
+              // Background-command lifecycle transitions in the dropped
+              // buffer are session-scoped bookkeeping, not turn content —
+              // apply them so earlier runs' backgrounded commands still
+              // complete. Emitted after activeTurn is set so this run's
+              // event ingestion (already subscribed) persists them.
+              yield* Effect.forEach(
+                supersededWakeup.bufferedMessages,
+                (buffered) => completeBackgroundCommandFromTaskMessage(buffered),
+                { discard: true },
+              );
+            }
             yield* emitProviderEvent({
               type: "provider_turn.updated",
               driver: CLAUDE_PROVIDER,
@@ -3168,6 +3541,107 @@ export function makeClaudeAdapterV2(
               }),
             });
             yield* querySession.query.offer(userMessage);
+          },
+          (effect, turnInput) =>
+            effect.pipe(
+              Effect.mapError(
+                (cause) =>
+                  new ProviderAdapterTurnStartError({
+                    driver: CLAUDE_PROVIDER,
+                    threadId: turnInput.threadId,
+                    providerThreadId: turnInput.providerThread.id,
+                    runId: turnInput.runId,
+                    cause,
+                  }),
+              ),
+            ),
+        );
+
+        /**
+         * Adopt a provider-initiated turn announced via `turn.wakeup`: no
+         * prompt is sent — the SDK is already mid-turn. The orchestrator-minted
+         * run context is installed and the buffered wakeup activity is replayed
+         * through the normal message pipeline (including, possibly, the
+         * `result` if the wakeup turn already finished while unclaimed).
+         */
+        const attachTurn = Effect.fn("ClaudeAdapterV2.attachTurn")(
+          function* (turnInput: ProviderAdapterV2TurnInput) {
+            yield* sdkMessageGate.withPermits(1)(
+              Effect.gen(function* () {
+                const startedAt = yield* DateTime.now;
+                const pending = yield* Ref.get(pendingWakeup);
+                const live = yield* Ref.get(queryContext);
+                if (pending === null || !pending.announced) {
+                  return yield* new ProviderAdapterProtocolError({
+                    driver: CLAUDE_PROVIDER,
+                    detail: `Claude provider thread ${turnInput.providerThread.id} has no announced wakeup turn to attach to.`,
+                  });
+                }
+                if (live === null || live.query !== pending.query) {
+                  return yield* new ProviderAdapterProtocolError({
+                    driver: CLAUDE_PROVIDER,
+                    detail: `Claude provider thread ${turnInput.providerThread.id} wakeup query is no longer live.`,
+                  });
+                }
+                const currentTurn = yield* Ref.get(activeTurn);
+                if (currentTurn !== null) {
+                  return yield* new ProviderAdapterProtocolError({
+                    driver: CLAUDE_PROVIDER,
+                    detail: `Claude provider turn ${currentTurn.providerTurnId} is still active.`,
+                  });
+                }
+                const nativeTurnId = `turn:${turnInput.attemptId}`;
+                const providerTurnId = idAllocator.derive.providerTurn({
+                  driver: CLAUDE_PROVIDER,
+                  nativeTurnId,
+                });
+                const context: ActiveClaudeTurnContext = {
+                  input: turnInput,
+                  nativeTurnId,
+                  nativeMessageCursor: null,
+                  pendingScheduledWakeup: null,
+                  waitingForWakeup: false,
+                  providerTurnId,
+                  providerTurnOrdinal: turnInput.providerTurnOrdinal,
+                  startedAt,
+                  assistant: {
+                    fallbackText: "",
+                    fallbackNativeItemId: `assistant:${turnInput.runId}`,
+                    emittedNativeItemIds: new Set(),
+                  },
+                  toolCalls: new Map(),
+                  ignoredTaskIds: new Set(),
+                  subagentsByTaskId: new Map(),
+                  subagentsByToolUseId: new Map(),
+                  subagentNodesByTaskId: new Map(),
+                };
+                yield* Ref.set(activeTurn, context);
+                yield* Ref.set(pendingWakeup, null);
+                yield* Ref.set(lastProviderThreadId, turnInput.providerThread.id);
+                yield* emitProviderEvent({
+                  type: "provider_turn.updated",
+                  driver: CLAUDE_PROVIDER,
+                  providerTurn: providerTurnPayload({
+                    context,
+                    status: "running",
+                    completedAt: null,
+                  }),
+                });
+                if (pending.droppedMessageCount > 0) {
+                  yield* Effect.logWarning("orchestration-v2.claude-wakeup-replay-truncated", {
+                    providerSessionId: input.providerSessionId,
+                    threadId: turnInput.threadId,
+                    runId: turnInput.runId,
+                    droppedMessageCount: pending.droppedMessageCount,
+                  });
+                }
+                yield* Effect.forEach(
+                  pending.bufferedMessages,
+                  (message) => processSdkMessage({ query: pending.query, message }),
+                  { discard: true },
+                );
+              }),
+            );
           },
           (effect, turnInput) =>
             effect.pipe(
@@ -3387,6 +3861,7 @@ export function makeClaudeAdapterV2(
               ),
           ),
           startTurn,
+          attachTurn,
           steerTurn,
           interruptTurn,
           respondToRuntimeRequest: Effect.fn("ClaudeAdapterV2.respondToRuntimeRequest")(

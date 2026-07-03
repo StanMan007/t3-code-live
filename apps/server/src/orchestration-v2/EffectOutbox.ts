@@ -32,6 +32,11 @@ export const OrchestrationEffectRequestV2 = Schema.Union([
   Schema.Struct({
     type: Schema.Literal("provider-turn.start"),
     runId: RunId,
+    /**
+     * "attach" adopts a provider-initiated turn that is already in flight
+     * (wakeup) instead of sending the run's message to the provider.
+     */
+    turnDelivery: Schema.optional(Schema.Literal("attach")),
   }),
   Schema.Struct({
     type: Schema.Literal("provider-turn.interrupt"),

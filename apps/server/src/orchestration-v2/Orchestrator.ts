@@ -2049,6 +2049,45 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       );
       const activeRun = projection.runs.find(isBlockingRun);
       const pendingMergeBackTransfers = pendingMergeBackTransfersForThread(projection);
+      if (dispatchMode.type === "attach_wakeup") {
+        // A wakeup run adopts an in-flight provider turn; it can never queue,
+        // steer, or coexist with a blocking run (a user-requested turn that
+        // raced the wakeup supersedes it — the adapter drops its buffer).
+        if (activeRun !== undefined) {
+          return yield* new OrchestratorDispatchError({
+            commandId: command.commandId,
+            commandType: command.type,
+            cause: `Thread ${command.threadId} already has blocking run ${activeRun.id}; provider wakeup is superseded.`,
+          });
+        }
+        if (
+          activeProviderThread === undefined ||
+          activeProviderThread.id !== dispatchMode.providerThreadId
+        ) {
+          return yield* new OrchestratorDispatchError({
+            commandId: command.commandId,
+            commandType: command.type,
+            cause: `Provider wakeup for ${dispatchMode.providerThreadId} does not match the active provider thread of thread ${command.threadId}.`,
+          });
+        }
+        if (modelSelection.instanceId !== activeProviderThread.providerInstanceId) {
+          return yield* new OrchestratorDispatchError({
+            commandId: command.commandId,
+            commandType: command.type,
+            cause: `Provider wakeup cannot switch provider instances (thread ${command.threadId}).`,
+          });
+        }
+        if (
+          pendingMergeBackTransfers.length > 0 ||
+          pendingForkTransferForThread(projection) !== undefined
+        ) {
+          return yield* new OrchestratorDispatchError({
+            commandId: command.commandId,
+            commandType: command.type,
+            cause: `Thread ${command.threadId} has pending context transfers; provider wakeup is not attachable.`,
+          });
+        }
+      }
       const shouldQueue =
         activeRun !== undefined &&
         (dispatchMode.type === "defer_start" ||
@@ -2478,7 +2517,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           updatedAt: now,
           type: "user_message",
           messageId: command.messageId,
-          inputIntent: "turn_start",
+          inputIntent: dispatchMode.type === "attach_wakeup" ? "provider_wakeup" : "turn_start",
           text: command.text,
           attachments: command.attachments,
         };
@@ -2587,7 +2626,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           id: `effect:${command.commandId}:provider-turn.start:${runId}`,
           commandId: command.commandId,
           threadId: command.threadId,
-          request: { type: "provider-turn.start", runId },
+          request: {
+            type: "provider-turn.start",
+            runId,
+            ...(dispatchMode.type === "attach_wakeup" ? { turnDelivery: "attach" as const } : {}),
+          },
         } satisfies PendingOrchestrationEffectV2;
         if (dispatchMode.type !== "defer_start") {
           yield* Ref.update(effects, (existing) => [...existing, pendingEffect]);

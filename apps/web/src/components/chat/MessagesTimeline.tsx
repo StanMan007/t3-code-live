@@ -33,6 +33,7 @@ import {
   workEntryIndicatesToolFailure,
   workEntryIndicatesToolNeutralStatus,
   workEntryIndicatesToolSuccess,
+  workEntryIsLiveBackgroundWork,
   workLogEntryIsToolLike,
 } from "../../session-logic";
 import { type TurnDiffSummary } from "../../types";
@@ -75,6 +76,7 @@ import {
   computeStableMessagesTimelineRows,
   MAX_VISIBLE_WORK_LOG_ENTRIES,
   deriveMessagesTimelineRows,
+  deriveUnsettledRunId,
   normalizeCompactToolLabel,
   resolveAssistantMessageCopyState,
   resolveTimelineIsAtEnd,
@@ -160,6 +162,7 @@ interface TimelineRowActivityState {
   isWorking: boolean;
   isRevertingCheckpoint: boolean;
   activeTurnInProgress: boolean;
+  unsettledRunId: RunId | null;
 }
 
 const TimelineRowCtx = createContext<TimelineRowSharedState>(null!);
@@ -468,8 +471,9 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       isWorking,
       isRevertingCheckpoint,
       activeTurnInProgress,
+      unsettledRunId: deriveUnsettledRunId(latestRun),
     }),
-    [activeTurnInProgress, isRevertingCheckpoint, isWorking],
+    [activeTurnInProgress, isRevertingCheckpoint, isWorking, latestRun],
   );
   const listHeader = useMemo(
     () =>
@@ -1008,26 +1012,35 @@ function UserMessageIntentBadge({
 }) {
   const presentation =
     intent === "queued_turn"
-      ? { label: "queued", className: "border-amber-500/25 bg-amber-500/8 text-amber-700" }
+      ? {
+          label: "queued",
+          className: "border-amber-500/25 bg-amber-500/8 text-amber-700",
+          title: "Queued behind the active turn",
+        }
       : intent === "promoted_queued_to_steer"
         ? {
             label: "queued → steer",
             className: "border-sky-500/25 bg-sky-500/8 text-sky-700",
+            title: "Originally queued, then promoted to steer the active turn",
           }
-        : { label: "steer", className: "border-sky-500/25 bg-sky-500/8 text-sky-700" };
+        : intent === "provider_wakeup"
+          ? {
+              label: "resumed",
+              className: "border-violet-500/25 bg-violet-500/8 text-violet-700",
+              title: "The provider resumed the session on its own (e.g. a background task finished)",
+            }
+          : {
+              label: "steer",
+              className: "border-sky-500/25 bg-sky-500/8 text-sky-700",
+              title: "Steered the active turn",
+            };
   return (
     <span
       className={cn(
         "me-1 rounded-full border px-1.5 py-0.5 text-[10px] font-medium tracking-wide",
         presentation.className,
       )}
-      title={
-        intent === "queued_turn"
-          ? "Queued behind the active turn"
-          : intent === "promoted_queued_to_steer"
-            ? "Originally queued, then promoted to steer the active turn"
-            : "Steered the active turn"
-      }
+      title={presentation.title}
     >
       {presentation.label}
     </span>
@@ -1479,12 +1492,20 @@ const WorkGroupSection = memo(function WorkGroupSection({
   groupedEntries: Extract<MessagesTimelineRow, { kind: "work" }>["groupedEntries"];
 }) {
   const { workspaceRoot } = use(TimelineRowCtx);
+  const activity = use(TimelineRowActivityCtx);
   const [isExpanded, setIsExpanded] = useState(false);
   const sectionRef = useRef<HTMLElement>(null);
   const anchorBottomBeforeToggleRef = useRef<number | null>(null);
+  // Background work that outlived its (settled) run is neutral-status but
+  // must stay visible — it is the only trace of a still-running command.
   const nonEmptyEntries = useMemo(
-    () => groupedEntries.filter((entry) => !workEntryIndicatesToolNeutralStatus(entry)),
-    [groupedEntries],
+    () =>
+      groupedEntries.filter(
+        (entry) =>
+          !workEntryIndicatesToolNeutralStatus(entry) ||
+          workEntryIsLiveBackgroundWork(entry, activity.unsettledRunId),
+      ),
+    [groupedEntries, activity.unsettledRunId],
   );
   const hasOverflow = nonEmptyEntries.length > MAX_VISIBLE_WORK_LOG_ENTRIES;
   const visibleEntries =
@@ -2347,10 +2368,16 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
       ? "font-medium text-destructive"
       : "font-medium text-foreground/82";
   const turnSettled = !activity.activeTurnInProgress;
-  const showNeutralIndicator = !turnSettled && workEntryIndicatesToolNeutralStatus(workEntry);
+  // Explicitly-inProgress work from a settled run is still running in the
+  // background — it must not inherit the settled-turn "assume completed"
+  // checkmark.
+  const isLiveBackgroundWork = workEntryIsLiveBackgroundWork(workEntry, activity.unsettledRunId);
+  const showRunningIndicator = isLiveBackgroundWork;
+  const showNeutralIndicator =
+    !turnSettled && !isLiveBackgroundWork && workEntryIndicatesToolNeutralStatus(workEntry);
   const showSuccessIndicator =
     workEntryIndicatesToolSuccess(workEntry) ||
-    (turnSettled && workEntryIndicatesToolNeutralStatus(workEntry));
+    (turnSettled && !isLiveBackgroundWork && workEntryIndicatesToolNeutralStatus(workEntry));
   const rowToggleProps = canExpand
     ? {
         role: "button" as const,
@@ -2443,6 +2470,23 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
                     </span>
                   </TooltipTrigger>
                   <TooltipPopup>Completed</TooltipPopup>
+                </Tooltip>
+              ) : showRunningIndicator ? (
+                <Tooltip>
+                  <TooltipTrigger
+                    render={
+                      <span
+                        className="flex size-4 items-center justify-center"
+                        aria-label="Still running in the background"
+                      />
+                    }
+                  >
+                    <span
+                      className="block size-2 shrink-0 animate-pulse rounded-full bg-sky-500/80"
+                      aria-hidden
+                    />
+                  </TooltipTrigger>
+                  <TooltipPopup>Running in the background</TooltipPopup>
                 </Tooltip>
               ) : showNeutralIndicator ? (
                 <Tooltip>

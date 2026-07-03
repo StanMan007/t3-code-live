@@ -2,9 +2,11 @@ import {
   ModelSelection,
   OrchestrationV2DomainEvent,
   OrchestrationV2ProviderSession,
+  OrchestrationV2ProviderWakeupOrigin,
   OrchestrationV2RuntimeRequest,
   ProviderInstanceId,
   ProviderSessionId,
+  ProviderThreadId,
   ThreadId,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
@@ -160,6 +162,28 @@ export class ProviderSessionManagerV2 extends Context.Service<
   ProviderSessionManagerV2Shape
 >()("t3/orchestration-v2/ProviderSessionManager/ProviderSessionManagerV2") {}
 
+/**
+ * Reacts to `turn.wakeup` adapter events — a provider starting a turn the
+ * orchestrator never requested (e.g. the Claude SDK resuming after a
+ * background task notification). The session manager's event pump is the only
+ * session-lifetime consumer of adapter events (run-scoped ingestion stops at
+ * each run's terminal), so the observer is invoked from there. The live
+ * implementation dispatches an `attach_wakeup` message so the wakeup becomes
+ * a visible provider-initiated run; the default drops wakeups silently (test
+ * harnesses).
+ */
+export class ProviderWakeupObserver extends Context.Reference<{
+  readonly onWakeup: (input: {
+    readonly threadId: ThreadId;
+    readonly providerThreadId: ProviderThreadId;
+    readonly providerInstanceId: ProviderInstanceId;
+    readonly providerSessionId: ProviderSessionId;
+    readonly origin: OrchestrationV2ProviderWakeupOrigin;
+  }) => Effect.Effect<void>;
+}>("t3/orchestration-v2/ProviderWakeupObserver", {
+  defaultValue: () => ({ onWakeup: () => Effect.void }),
+}) {}
+
 interface LiveSessionEntry {
   readonly attachedThreadIds: ReadonlySet<ThreadId>;
   readonly loadedProviderThreadKeyByThread: ReadonlyMap<ThreadId, string>;
@@ -247,6 +271,7 @@ export const layerWithOptions = (
       const eventSink = yield* EventSinkV2;
       const idAllocator = yield* IdAllocatorV2;
       const projectionStore = yield* ProjectionStoreV2;
+      const wakeupObserver = yield* ProviderWakeupObserver;
       const layerScope = yield* Effect.scope;
       const sessions = yield* Ref.make(new Map<string, LiveSessionEntry>());
       const nextSubscriberId = yield* Ref.make(0);
@@ -995,6 +1020,32 @@ export const layerWithOptions = (
           ),
         );
 
+      const notifyWakeupObserver = (
+        entry: LiveSessionEntry,
+        event: Extract<ProviderAdapterV2Event, { readonly type: "turn.wakeup" }>,
+      ) =>
+        wakeupObserver
+          .onWakeup({
+            threadId: event.threadId,
+            providerThreadId: event.providerThreadId,
+            providerInstanceId: entry.runtime.instanceId,
+            providerSessionId: entry.runtime.providerSessionId,
+            origin: event.origin,
+          })
+          .pipe(
+            Effect.catchCause((cause) =>
+              Effect.logWarning("orchestration-v2.driver-session.wakeup-observer-failed", {
+                providerSessionId: entry.runtime.providerSessionId,
+                threadId: event.threadId,
+                cause,
+              }),
+            ),
+            // Forked so a slow wakeup dispatch never stalls the event pump;
+            // the adapter keeps buffering the wakeup turn until attachTurn.
+            Effect.forkIn(layerScope),
+            Effect.asVoid,
+          );
+
       const startEventPump = (entry: LiveSessionEntry) =>
         entry.runtime.events.pipe(
           Stream.runForEach((event) =>
@@ -1008,6 +1059,9 @@ export const layerWithOptions = (
                 event.type === "provider_session.updated"
                   ? persistProviderSessionUpdate(entry, event)
                   : Effect.void,
+              ),
+              Effect.andThen(
+                event.type === "turn.wakeup" ? notifyWakeupObserver(entry, event) : Effect.void,
               ),
               Effect.andThen(
                 publishToSubscribers(entry.eventSubscribers, { type: "event", event }),

@@ -281,7 +281,7 @@ function deriveSupersededAttemptFolds(
  * a message, the previous turn is still the "active" one until the server
  * creates the new turn, and folding must not flicker through that window.
  */
-function deriveUnsettledRunId(latestRun: TimelineLatestRun | null): RunId | null {
+export function deriveUnsettledRunId(latestRun: TimelineLatestRun | null): RunId | null {
   if (!latestRun) {
     return null;
   }
@@ -291,6 +291,16 @@ function deriveUnsettledRunId(latestRun: TimelineLatestRun | null): RunId | null
     latestRun.status !== "starting" &&
     latestRun.status !== "waiting";
   return isSettled ? null : latestRun.runId;
+}
+
+/**
+ * Work that outlives its turn (e.g. a Bash command with run_in_background)
+ * stays `inProgress` after the run settles. Folding it away with the rest of
+ * the turn would make the thread look finished while the command is still
+ * running, so it stays visible until it reaches a terminal status.
+ */
+function timelineEntryIsInProgressWork(entry: TimelineEntry): boolean {
+  return entry.kind === "work" && entry.entry.toolLifecycleStatus === "inProgress";
 }
 
 function timelineEntryFoldRunId(entry: TimelineEntry): RunId | null {
@@ -388,7 +398,11 @@ function deriveTurnFolds(input: {
     }
     const hiddenEntryIds = new Set<string>();
     for (const entry of group.entries) {
-      if (entry.id !== group.terminalEntry?.id && !timelineEntryIsPersistentResourceCard(entry)) {
+      if (
+        entry.id !== group.terminalEntry?.id &&
+        !timelineEntryIsPersistentResourceCard(entry) &&
+        !timelineEntryIsInProgressWork(entry)
+      ) {
         hiddenEntryIds.add(entry.id);
       }
     }

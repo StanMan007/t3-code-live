@@ -60,6 +60,19 @@ const OrchestrationV2CreationFields = {
   creationSource: OrchestrationV2CreationSource,
 } as const;
 
+/**
+ * Why a provider started a turn the orchestrator never requested (e.g. the
+ * Claude Agent SDK re-invokes the agent when a background task completes).
+ * Carried from the adapter's `turn.wakeup` announcement into the
+ * provider-initiated run's dispatch command.
+ */
+export const OrchestrationV2ProviderWakeupOrigin = Schema.Struct({
+  kind: Schema.Literals(["task_notification", "unknown"]),
+  nativeTaskId: Schema.optional(Schema.String),
+  detail: Schema.optional(Schema.String),
+});
+export type OrchestrationV2ProviderWakeupOrigin = typeof OrchestrationV2ProviderWakeupOrigin.Type;
+
 export const OrchestrationV2NativeRefStrength = Schema.Literals(["strong", "weak", "none"]);
 export type OrchestrationV2NativeRefStrength = typeof OrchestrationV2NativeRefStrength.Type;
 
@@ -726,6 +739,7 @@ export const OrchestrationV2UserMessageInputIntent = Schema.Literals([
   "queued_turn",
   "steer",
   "promoted_queued_to_steer",
+  "provider_wakeup",
 ]);
 export type OrchestrationV2UserMessageInputIntent =
   typeof OrchestrationV2UserMessageInputIntent.Type;
@@ -1748,6 +1762,16 @@ export const OrchestrationV2Command = Schema.Union([
       Schema.Struct({ type: Schema.Literal("restart_active"), targetRunId: RunId }),
       Schema.Struct({ type: Schema.Literal("queue_after_active") }),
       Schema.Struct({ type: Schema.Literal("start_immediately") }),
+      /**
+       * Mint a provider-initiated run for a turn the provider already started
+       * on its own (announced via the adapter's `turn.wakeup` event) and
+       * attach to it — nothing is sent to the provider.
+       */
+      Schema.Struct({
+        type: Schema.Literal("attach_wakeup"),
+        providerThreadId: ProviderThreadId,
+        origin: OrchestrationV2ProviderWakeupOrigin,
+      }),
     ]),
   }),
   Schema.Struct({

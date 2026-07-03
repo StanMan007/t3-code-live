@@ -13,6 +13,7 @@ import {
   OrchestrationV2ProviderFailure,
   OrchestrationV2ProviderThread,
   OrchestrationV2ProviderTurn,
+  OrchestrationV2ProviderWakeupOrigin,
   OrchestrationV2RuntimeRequest,
   OrchestrationV2Subagent,
   OrchestrationV2TurnItem,
@@ -70,6 +71,15 @@ export const ProviderAdapterV2SessionStatus = Schema.Literals([
   "error",
 ]);
 export type ProviderAdapterV2SessionStatus = typeof ProviderAdapterV2SessionStatus.Type;
+
+/**
+ * Why a provider started a turn the orchestrator never requested. Providers
+ * (e.g. the Claude Agent SDK) can resume a session on their own after the
+ * previous turn completed — background task notifications and scheduled
+ * wakeups re-invoke the agent without a user prompt.
+ */
+export const ProviderTurnWakeupOrigin = OrchestrationV2ProviderWakeupOrigin;
+export type ProviderTurnWakeupOrigin = OrchestrationV2ProviderWakeupOrigin;
 
 export const ProviderAdapterV2Event = Schema.Union([
   Schema.Struct({
@@ -144,6 +154,20 @@ export const ProviderAdapterV2Event = Schema.Union([
     status: Schema.Literal("failed"),
     failure: OrchestrationV2ProviderFailure,
     threadDisposition: Schema.Literals(["reusable", "broken"]),
+  }),
+  /**
+   * The provider started producing turn activity with no orchestrator-requested
+   * turn active (provider-initiated wakeup). This is a control signal, not a
+   * projection event: the session-lifetime wakeup watcher reacts by minting a
+   * provider-initiated run and attaching to the in-flight turn via
+   * `attachTurn`. The adapter buffers the wakeup's SDK activity until then.
+   */
+  Schema.Struct({
+    type: Schema.Literal("turn.wakeup"),
+    driver: ProviderDriverKind,
+    threadId: ThreadId,
+    providerThreadId: ProviderThreadId,
+    origin: ProviderTurnWakeupOrigin,
   }),
 ]);
 export type ProviderAdapterV2Event = typeof ProviderAdapterV2Event.Type;
@@ -484,6 +508,16 @@ export interface ProviderAdapterV2SessionRuntime {
     readonly runtimePolicy?: ProviderAdapterV2RuntimePolicy;
   }) => Effect.Effect<OrchestrationV2ProviderThread, ProviderAdapterV2Error>;
   readonly startTurn: (
+    input: ProviderAdapterV2TurnInput,
+  ) => Effect.Effect<void, ProviderAdapterV2Error>;
+  /**
+   * Attach an orchestrator-minted run to a provider-initiated turn that is
+   * already in flight (announced via a `turn.wakeup` event). Behaves like
+   * `startTurn` except no prompt is sent to the provider: the adapter adopts
+   * the turn context and replays the wakeup activity it buffered since the
+   * wakeup was announced. Adapters that never self-start turns may omit this.
+   */
+  readonly attachTurn?: (
     input: ProviderAdapterV2TurnInput,
   ) => Effect.Effect<void, ProviderAdapterV2Error>;
   readonly steerTurn: (

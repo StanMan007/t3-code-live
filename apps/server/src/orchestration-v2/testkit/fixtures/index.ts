@@ -2,6 +2,8 @@ import { ProviderDriverKind } from "@t3tools/contracts";
 
 import { claudeLocalBashTaskInput } from "./claude_local_bash_task/input.ts";
 import { assertClaudeLocalBashTaskOutput } from "./claude_local_bash_task/output.ts";
+import { claudeProviderWakeupInput } from "./claude_provider_wakeup/input.ts";
+import { assertClaudeProviderWakeupOutput } from "./claude_provider_wakeup/output.ts";
 import { grokSubagentLineageInput } from "./grok_subagent_lineage/input.ts";
 import { assertGrokSubagentLineageOutput } from "./grok_subagent_lineage/output.ts";
 import { assertClaudeMessageSteeringOutput } from "./message_steering/claude_output.ts";
@@ -92,6 +94,21 @@ export const ORCHESTRATOR_REPLAY_FIXTURES = [
         ),
         modelSelection: CLAUDE_MODEL_SELECTION,
         assertOutput: assertClaudeLocalBashTaskOutput,
+      },
+    ],
+  },
+  {
+    name: "claude_provider_wakeup",
+    buildInput: claudeProviderWakeupInput,
+    providers: [
+      {
+        driver: ProviderDriverKind.make("claudeAgent"),
+        transcriptFile: new URL(
+          "./claude_provider_wakeup/claude_transcript.ndjson",
+          import.meta.url,
+        ),
+        modelSelection: CLAUDE_MODEL_SELECTION,
+        assertOutput: assertClaudeProviderWakeupOutput,
       },
     ],
   },

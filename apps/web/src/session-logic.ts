@@ -160,6 +160,25 @@ export function workEntryIndicatesToolNeutralStatus(entry: WorkLogEntry): boolea
   );
 }
 
+/**
+ * Work that outlives its turn: an entry that explicitly reports `inProgress`
+ * while its run is no longer the unsettled one (e.g. a Bash command started
+ * with run_in_background whose task completes later, possibly during a
+ * provider wakeup). Such entries must not be treated as "neutral/assumed
+ * done" — they are genuinely still running.
+ */
+export function workEntryIsLiveBackgroundWork(
+  entry: WorkLogEntry,
+  unsettledRunId: RunId | null,
+): boolean {
+  return (
+    entry.toolLifecycleStatus === "inProgress" &&
+    entry.runId !== null &&
+    entry.runId !== undefined &&
+    entry.runId !== unsettledRunId
+  );
+}
+
 export function formatDuration(durationMs: number): string {
   if (!Number.isFinite(durationMs) || durationMs < 0) return "0ms";
   if (durationMs < 1_000) return `${Math.max(1, Math.round(durationMs))}ms`;

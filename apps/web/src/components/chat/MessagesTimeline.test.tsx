@@ -398,6 +398,74 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain(">steer<");
   });
 
+  it("labels provider wakeup messages as resumed rather than steer", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const entry = buildUserTimelineEntry("Resumed by the provider: a background task finished");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          { ...entry, message: { ...entry.message, inputIntent: "provider_wakeup" as const } },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain(">resumed<");
+    expect(markup).not.toContain(">steer<");
+  });
+
+  it("keeps a still-running background command visible after its turn settles", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const runId = RunId.make("run-1");
+    const timelineEntries = [
+      buildUserTimelineEntry("Start a background watcher"),
+      {
+        id: "background-command-entry",
+        kind: "work" as const,
+        createdAt: "2026-03-17T19:12:30.000Z",
+        entry: {
+          id: "background-command",
+          createdAt: "2026-03-17T19:12:30.000Z",
+          runId,
+          label: "Ran command",
+          command: "sleep 75 && echo watcher-done",
+          rawCommand: "sleep 75 && echo watcher-done",
+          tone: "tool" as const,
+          toolLifecycleStatus: "inProgress" as const,
+        },
+      },
+      {
+        id: "assistant-final-entry",
+        kind: "message" as const,
+        createdAt: "2026-03-17T19:12:40.000Z",
+        message: {
+          id: MessageId.make("assistant-final"),
+          role: "assistant" as const,
+          text: "Waiting for the watcher to finish.",
+          runId,
+          createdAt: "2026-03-17T19:12:40.000Z",
+          updatedAt: "2026-03-17T19:12:41.000Z",
+          streaming: false,
+        },
+      },
+    ];
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        latestRun={{
+          runId,
+          status: "completed",
+          startedAt: MESSAGE_CREATED_AT,
+          completedAt: "2026-03-17T19:12:41.000Z",
+        }}
+        timelineEntries={timelineEntries}
+      />,
+    );
+
+    expect(markup).toContain("sleep 75 &amp;&amp; echo watcher-done");
+    expect(markup).toContain("Still running in the background");
+  });
+
   it("shows a collapsed disclosure for superseded attempt output", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
     const runId = RunId.make("run-steered");

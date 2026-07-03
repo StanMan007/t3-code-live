@@ -39,6 +39,7 @@ export interface ProviderTurnStartServiceV2Shape {
   readonly start: (input: {
     readonly threadId: ThreadId;
     readonly runId: RunId;
+    readonly turnDelivery?: "prompt" | "attach";
   }) => Effect.Effect<void, ProviderTurnStartError>;
 }
 
@@ -71,6 +72,7 @@ export const layer: Layer.Layer<
     const start = Effect.fn("orchestrationV2.providerTurnStart.start")(function* (input: {
       readonly threadId: ThreadId;
       readonly runId: RunId;
+      readonly turnDelivery?: "prompt" | "attach";
     }) {
       const { runId } = input;
       const projection = yield* projectionStore.getThreadProjection(input.threadId);
@@ -408,6 +410,7 @@ export const layer: Layer.Layer<
         appThread: projection.thread,
         providerSessionId,
         session,
+        ...(input.turnDelivery === undefined ? {} : { turnDelivery: input.turnDelivery }),
         run: runningRun,
         rootNode: runningRootNode,
         checkpointScope,

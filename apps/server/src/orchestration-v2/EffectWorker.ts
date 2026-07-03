@@ -77,7 +77,13 @@ export const executorLayer: Layer.Layer<
               );
           case "provider-turn.start":
             return providerTurnStart
-              .start({ threadId: effect.threadId, runId: effect.request.runId })
+              .start({
+                threadId: effect.threadId,
+                runId: effect.request.runId,
+                ...(effect.request.turnDelivery === undefined
+                  ? {}
+                  : { turnDelivery: effect.request.turnDelivery }),
+              })
               .pipe(
                 Effect.mapError(
                   (cause) =>
