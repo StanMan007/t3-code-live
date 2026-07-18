@@ -61,6 +61,10 @@ function makeFakeBrowserWindow() {
     replaceMisspelling: vi.fn(),
     send: vi.fn(),
     setWindowOpenHandler: vi.fn(),
+    session: {
+      setPermissionCheckHandler: vi.fn(),
+      setPermissionRequestHandler: vi.fn(),
+    },
   };
 
   const window = {
@@ -95,6 +99,44 @@ function makeFakeBrowserWindow() {
     windowListeners,
   };
 }
+
+describe("main renderer media permissions", () => {
+  it("allows microphone access only for the app renderer origin", () => {
+    assert.isTrue(
+      DesktopWindow.isMainRendererMediaPermissionAllowed({
+        applicationUrl: "t3code-dev://app/",
+        requestingOrigin: "t3code-dev://app/",
+        permission: "media",
+        mediaTypes: ["audio"],
+      }),
+    );
+    assert.isFalse(
+      DesktopWindow.isMainRendererMediaPermissionAllowed({
+        applicationUrl: "t3code-dev://app/",
+        requestingOrigin: "https://example.com/",
+        permission: "media",
+        mediaTypes: ["audio"],
+      }),
+    );
+    assert.isTrue(
+      DesktopWindow.isMainRendererMediaPermissionAllowed({
+        applicationUrl: "t3code://app/",
+        requestingOrigin: "",
+        securityOrigin: "t3code://app/",
+        permission: "media",
+        mediaTypes: ["audio"],
+      }),
+    );
+    assert.isFalse(
+      DesktopWindow.isMainRendererMediaPermissionAllowed({
+        applicationUrl: "t3code-dev://app/",
+        requestingOrigin: "t3code-dev://app/",
+        permission: "media",
+        mediaTypes: ["video"],
+      }),
+    );
+  });
+});
 
 const desktopAssetsLayer = Layer.succeed(DesktopAssets.DesktopAssets, {
   iconPaths: Effect.succeed({

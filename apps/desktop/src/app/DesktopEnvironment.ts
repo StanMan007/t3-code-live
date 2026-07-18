@@ -21,6 +21,7 @@ export interface MakeDesktopEnvironmentInput {
   readonly platform: NodeJS.Platform;
   readonly processArch: string;
   readonly appVersion: string;
+  readonly appName?: string;
   readonly appPath: string;
   readonly isPackaged: boolean;
   readonly resourcesPath: string;
@@ -92,7 +93,21 @@ function resolveDesktopAppStageLabel(input: {
 function resolveDesktopAppBranding(input: {
   readonly isDevelopment: boolean;
   readonly appVersion: string;
+  readonly packagedProductName?: string;
 }): DesktopAppBranding {
+  const packagedProductName = input.packagedProductName?.trim();
+  if (packagedProductName) {
+    const stageMatch = packagedProductName.match(/ \((Alpha|Nightly|Dev)\)$/u);
+    const stageLabel = (stageMatch?.[1] ??
+      resolveDesktopAppStageLabel(input)) as DesktopAppStageLabel;
+    return {
+      baseName: stageMatch
+        ? packagedProductName.slice(0, -stageMatch[0].length)
+        : packagedProductName,
+      stageLabel,
+      displayName: packagedProductName,
+    };
+  }
   const stageLabel = resolveDesktopAppStageLabel(input);
   return {
     baseName: APP_BASE_NAME,
@@ -139,6 +154,13 @@ const make = Effect.fn("desktop.environment.make")(function* (
   const homeDirectory = input.homeDirectory;
   const devServerUrl = config.devServerUrl;
   const isDevelopment = Option.isSome(devServerUrl);
+  const packagedProductName = input.isPackaged ? input.appName?.trim() : undefined;
+  const defaultBranding = resolveDesktopAppBranding({
+    isDevelopment,
+    appVersion: input.appVersion,
+  });
+  const isCustomPackagedBuild =
+    packagedProductName !== undefined && packagedProductName !== defaultBranding.displayName;
   const appDataDirectory =
     input.platform === "win32"
       ? Option.getOrElse(config.appDataDirectory, () =>
@@ -147,17 +169,28 @@ const make = Effect.fn("desktop.environment.make")(function* (
       : input.platform === "darwin"
         ? path.join(homeDirectory, "Library", "Application Support")
         : Option.getOrElse(config.xdgConfigHome, () => path.join(homeDirectory, ".config"));
-  const baseDir = Option.getOrElse(config.t3Home, () => path.join(homeDirectory, ".t3"));
+  const baseDir = Option.getOrElse(config.t3Home, () =>
+    path.join(homeDirectory, isCustomPackagedBuild ? ".t3-live" : ".t3"),
+  );
   const rootDir = path.resolve(input.dirname, "../../..");
   const appRoot = input.isPackaged ? input.appPath : rootDir;
   const branding = resolveDesktopAppBranding({
     isDevelopment,
     appVersion: input.appVersion,
+    ...(packagedProductName === undefined ? {} : { packagedProductName }),
   });
   const displayName = branding.displayName;
   const stateDir = path.join(baseDir, isDevelopment ? "dev" : "userdata");
-  const userDataDirName = isDevelopment ? "t3code-dev" : "t3code";
-  const legacyUserDataDirName = isDevelopment ? "T3 Code (Dev)" : "T3 Code (Alpha)";
+  const userDataDirName = isDevelopment
+    ? "t3code-dev"
+    : isCustomPackagedBuild
+      ? "t3code-live"
+      : "t3code";
+  const legacyUserDataDirName = isDevelopment
+    ? "T3 Code (Dev)"
+    : isCustomPackagedBuild
+      ? "t3code-live"
+      : "T3 Code (Alpha)";
   const resourcesPath = input.resourcesPath;
 
   return DesktopEnvironment.of({

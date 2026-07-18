@@ -28,7 +28,9 @@ import {
   resolveFffNativeDependencies,
   resolveBuildOptions,
   resolveDesktopBuildIconAssets,
+  resolveDesktopAppId,
   resolveDesktopProductName,
+  resolveMacLocalSigningIdentity,
   resolveDesktopUpdateChannel,
   resolveGitHubPublishConfig,
   resolveMockUpdateServerPort,
@@ -86,6 +88,30 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
   it("switches desktop packaging product names to nightly for nightly builds", () => {
     assert.equal(resolveDesktopProductName("0.0.17"), "T3 Code (Alpha)");
     assert.equal(resolveDesktopProductName("0.0.17-nightly.20260413.42"), "T3 Code (Nightly)");
+  });
+
+  it("supports a side-by-side fork identity without changing upstream defaults", () => {
+    assert.equal(resolveDesktopAppId({}), "com.t3tools.t3code");
+    assert.equal(
+      resolveDesktopAppId({ T3CODE_DESKTOP_APP_ID: "com.stanman.t3codelive" }),
+      "com.stanman.t3codelive",
+    );
+    assert.equal(
+      resolveDesktopProductName("0.0.17-nightly.20260413.42", {
+        T3CODE_DESKTOP_PRODUCT_NAME: "T3 Code Live (Nightly)",
+      }),
+      "T3 Code Live (Nightly)",
+    );
+  });
+
+  it("supports stable local signing without changing the ad-hoc default", () => {
+    assert.equal(resolveMacLocalSigningIdentity({}), "-");
+    assert.equal(
+      resolveMacLocalSigningIdentity({
+        T3CODE_DESKTOP_LOCAL_SIGN_IDENTITY: " Apple Development: Example (TEAMID) ",
+      }),
+      "Apple Development: Example (TEAMID)",
+    );
   });
 
   it("switches desktop packaging icons to the nightly artwork for nightly versions", () => {
@@ -470,6 +496,24 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       assert.deepStrictEqual(mac.protocols, [
         { name: "T3 Code", schemes: ["t3code", "t3code-dev"] },
       ]);
+    }).pipe(Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} })))),
+  );
+
+  it.effect("ad-hoc signs local macOS builds with a stable application identity", () =>
+    Effect.gen(function* () {
+      const config = yield* createBuildConfig(
+        "mac",
+        "dmg",
+        "1.2.3",
+        false,
+        false,
+        undefined,
+        undefined,
+      );
+
+      const mac = config.mac as Record<string, unknown>;
+      assert.equal(mac.identity, "-");
+      assert.equal(mac.hardenedRuntime, false);
     }).pipe(Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} })))),
   );
 

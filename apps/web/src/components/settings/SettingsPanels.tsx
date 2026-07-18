@@ -1,10 +1,11 @@
-import { ArchiveIcon, ArchiveX, LoaderIcon, PlusIcon, RefreshCwIcon } from "lucide-react";
-import { Link } from "@tanstack/react-router";
+import { ArchiveIcon, ArchiveX, BotIcon, LoaderIcon, PlusIcon, RefreshCwIcon } from "lucide-react";
+import { Link, useNavigate } from "@tanstack/react-router";
 import { useCallback, useMemo, useRef, useState } from "react";
 import { useAtomValue } from "@effect/atom-react";
 import {
   defaultInstanceIdForDriver,
   type DesktopUpdateChannel,
+  type ModelSelection,
   PROVIDER_DISPLAY_NAMES,
   ProviderDriverKind,
   type ProviderInstanceConfig,
@@ -17,6 +18,7 @@ import {
   isAtomCommandInterrupted,
   settlePromise,
   squashAtomCommandFailure,
+  type AtomCommandResult,
 } from "@t3tools/client-runtime/state/runtime";
 import { DEFAULT_UNIFIED_SETTINGS } from "@t3tools/contracts/settings";
 import { createModelSelection } from "@t3tools/shared/model";
@@ -24,7 +26,12 @@ import * as Arr from "effect/Array";
 import * as Duration from "effect/Duration";
 import * as Equal from "effect/Equal";
 import * as Result from "effect/Result";
-import { APP_VERSION, HOSTED_APP_CHANNEL, HOSTED_APP_CHANNEL_LABEL } from "../../branding";
+import {
+  APP_BASE_NAME,
+  APP_VERSION,
+  HOSTED_APP_CHANNEL,
+  HOSTED_APP_CHANNEL_LABEL,
+} from "../../branding";
 import {
   canCheckForUpdate,
   getDesktopUpdateButtonTooltip,
@@ -57,7 +64,9 @@ import {
 } from "../../state/server";
 import { usePrimaryEnvironment } from "../../state/environments";
 import { useProjects } from "../../state/entities";
+import { threadEnvironment } from "../../state/threads";
 import { useArchivedThreadSnapshots } from "../../lib/archivedThreadsState";
+import { newMessageId, newThreadId } from "../../lib/utils";
 import { formatRelativeTime, formatRelativeTimeLabel } from "../../timestampFormat";
 import { Button } from "../ui/button";
 import { DraftInput } from "../ui/draft-input";
@@ -88,6 +97,7 @@ import {
 } from "./settingsLayout";
 import { ProjectFavicon } from "../ProjectFavicon";
 import { useAtomCommand } from "../../state/use-atom-command";
+import { buildLiveForkUpdatePrompt, findLiveForkSourceProject } from "./forkSourceUpdate.logic";
 
 const THEME_OPTIONS = [
   {
@@ -474,6 +484,146 @@ export function useSettingsRestore(onRestored?: () => void) {
     changedSettingLabels,
     restoreDefaults,
   };
+}
+
+function ForkSourceUpdateRow({ modelSelection }: { readonly modelSelection: ModelSelection }) {
+  const navigate = useNavigate();
+  const primaryEnvironment = usePrimaryEnvironment();
+  const projects = useProjects();
+  const createThread = useAtomCommand(threadEnvironment.create, { reportFailure: false });
+  const deleteThread = useAtomCommand(threadEnvironment.delete, { reportFailure: false });
+  const startThreadTurn = useAtomCommand(threadEnvironment.startTurn, { reportFailure: false });
+  const [isLaunching, setIsLaunching] = useState(false);
+  const sourceProject = useMemo(
+    () => findLiveForkSourceProject(projects, primaryEnvironment?.environmentId ?? null),
+    [primaryEnvironment?.environmentId, projects],
+  );
+
+  if (APP_BASE_NAME !== "T3 Code Live") {
+    return null;
+  }
+
+  const launchUpdateTask = async () => {
+    if (!sourceProject || isLaunching) return;
+
+    const createdAt = new Date().toISOString();
+    const threadId = newThreadId();
+    const title = "Update T3 Code Live from upstream";
+    const selectedModel = sourceProject.defaultModelSelection ?? modelSelection;
+    const prompt = buildLiveForkUpdatePrompt({
+      workspaceRoot: sourceProject.workspaceRoot,
+      installedVersion: APP_VERSION,
+    });
+    setIsLaunching(true);
+
+    const createResult = await createThread({
+      environmentId: sourceProject.environmentId,
+      input: {
+        threadId,
+        projectId: sourceProject.id,
+        title,
+        modelSelection: selectedModel,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+        createdAt,
+      },
+    });
+
+    let failure: AtomCommandResult<unknown, unknown> | null =
+      createResult._tag === "Failure" ? createResult : null;
+
+    if (failure === null) {
+      const startResult = await startThreadTurn({
+        environmentId: sourceProject.environmentId,
+        input: {
+          threadId,
+          message: {
+            messageId: newMessageId(),
+            role: "user",
+            text: prompt,
+            attachments: [],
+          },
+          modelSelection: selectedModel,
+          titleSeed: title,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          createdAt,
+        },
+      });
+      failure = startResult._tag === "Failure" ? startResult : null;
+    }
+
+    if (failure === null) {
+      const navigateResult = await settlePromise(() =>
+        navigate({
+          to: "/$environmentId/$threadId",
+          params: {
+            environmentId: sourceProject.environmentId,
+            threadId,
+          },
+        }),
+      );
+      if (navigateResult._tag === "Failure") {
+        failure = navigateResult;
+      }
+    }
+
+    if (failure !== null) {
+      const cleanupResult = await deleteThread({
+        environmentId: sourceProject.environmentId,
+        input: { threadId },
+      });
+      if (cleanupResult._tag === "Failure" && !isAtomCommandInterrupted(cleanupResult)) {
+        console.warn(
+          "Failed to clean up the fork update task after launch failure.",
+          squashAtomCommandFailure(cleanupResult),
+        );
+      }
+      if (!isAtomCommandInterrupted(failure)) {
+        const error = squashAtomCommandFailure(failure);
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Could not start the update task",
+            description:
+              error instanceof Error
+                ? error.message
+                : "The update task could not be created. Your source files were not changed.",
+          }),
+        );
+      }
+    }
+
+    setIsLaunching(false);
+  };
+
+  return (
+    <SettingsRow
+      title="Update T3 Code Live"
+      description={
+        sourceProject
+          ? "Checks upstream in a guarded Codex task, preserves Live Thread, tests it, and prepares a verified build."
+          : "Add the local t3code fork as a project to enable guarded source updates."
+      }
+      control={
+        <Button
+          size="xs"
+          variant="outline"
+          disabled={!sourceProject || isLaunching}
+          onClick={() => void launchUpdateTask()}
+        >
+          {isLaunching ? (
+            <LoaderIcon aria-hidden="true" className="size-3.5 animate-spin" />
+          ) : (
+            <BotIcon aria-hidden="true" className="size-3.5" />
+          )}
+          {isLaunching ? "Starting…" : "Check & update"}
+        </Button>
+      }
+    />
+  );
 }
 
 export function GeneralSettingsPanel() {
@@ -961,6 +1111,7 @@ export function GeneralSettingsPanel() {
             description="Current version of the application."
           />
         )}
+        <ForkSourceUpdateRow modelSelection={textGenerationModelSelection} />
         <SettingsRow
           title="Diagnostics"
           description={diagnosticsDescription}

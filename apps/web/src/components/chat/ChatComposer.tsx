@@ -75,6 +75,7 @@ import { ComposerPrimaryActions } from "./ComposerPrimaryActions";
 import { ComposerPendingApprovalPanel } from "./ComposerPendingApprovalPanel";
 import { ComposerPendingUserInputPanel } from "./ComposerPendingUserInputPanel";
 import { ComposerPlanFollowUpBanner } from "./ComposerPlanFollowUpBanner";
+import { LiveThreadControl } from "./LiveThreadControl";
 import { resolveComposerMenuActiveItemId } from "./composerMenuHighlight";
 import { searchSlashCommandItems } from "./composerSlashCommandSearch";
 import {
@@ -650,6 +651,15 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     (store) => store.syncPersistedAttachments,
   );
   const getComposerDraft = useComposerDraftStore((store) => store.getComposerDraft);
+
+  const handleLiveThreadDispatch = useCallback(
+    (instruction: string) => {
+      setComposerDraftPrompt(composerDraftTarget, instruction);
+      promptRef.current = instruction;
+      onSend();
+    },
+    [composerDraftTarget, onSend, promptRef, setComposerDraftPrompt],
+  );
 
   // ------------------------------------------------------------------
   // Model state
@@ -2535,8 +2545,22 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                 data-chat-composer-primary-actions-compact={
                   isComposerPrimaryActionsCompact ? "true" : "false"
                 }
-                className="flex shrink-0 flex-nowrap items-center justify-end gap-2"
+                className="relative flex shrink-0 flex-nowrap items-center justify-end gap-2"
               >
+                <LiveThreadControl
+                  environmentId={environmentId}
+                  threadId={activeThreadId}
+                  messages={activeThread?.messages ?? []}
+                  enabled={
+                    activeThreadId !== null &&
+                    activeThread?.session !== null &&
+                    activeThread?.session !== undefined &&
+                    selectedProvider === "codex" &&
+                    environmentUnavailable === null &&
+                    !isConnecting
+                  }
+                  onDispatch={handleLiveThreadDispatch}
+                />
                 <ComposerFooterPrimaryActions
                   compact={isComposerPrimaryActionsCompact}
                   activeContextWindow={activeContextWindow}

@@ -109,6 +109,23 @@ describe("DesktopEnvironment", () => {
     }),
   );
 
+  it.effect("isolates a side-by-side packaged fork identity and state", () =>
+    Effect.gen(function* () {
+      const environment = yield* makeEnvironment({
+        appName: "T3 Code Live (Nightly)",
+        isPackaged: true,
+      });
+
+      assert.equal(environment.displayName, "T3 Code Live (Nightly)");
+      assert.equal(environment.branding.baseName, "T3 Code Live");
+      assert.equal(environment.branding.stageLabel, "Nightly");
+      assert.equal(environment.baseDir, "/Users/alice/.t3-live");
+      assert.equal(environment.stateDir, "/Users/alice/.t3-live/userdata");
+      assert.equal(environment.userDataDirName, "t3code-live");
+      assert.equal(environment.legacyUserDataDirName, "t3code-live");
+    }),
+  );
+
   it.effect("resolves picker defaults without nullish sentinels", () =>
     Effect.gen(function* () {
       const environment = yield* makeEnvironment();

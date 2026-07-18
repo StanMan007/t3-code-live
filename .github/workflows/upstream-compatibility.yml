@@ -1,0 +1,39 @@
+name: Upstream compatibility
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 13 * * 1"
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  open-sync-pr:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Merge current upstream into a compatibility branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git remote add upstream https://github.com/pingdotgg/t3code.git
+          git fetch upstream main
+          if git merge-base --is-ancestor upstream/main HEAD; then
+            echo "Fork already contains upstream/main."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -C automation/upstream-compatibility
+          git merge --no-edit upstream/main
+          git push --force-with-lease origin automation/upstream-compatibility
+          gh pr view automation/upstream-compatibility >/dev/null 2>&1 || \
+            gh pr create \
+              --base main \
+              --head automation/upstream-compatibility \
+              --title "chore: verify current upstream compatibility" \
+              --body "Automated merge of pingdotgg/t3code main. Review Live Thread seam files and require the normal check, typecheck, test, build, and UI proof gates before merging."

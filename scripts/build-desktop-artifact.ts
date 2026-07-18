@@ -558,6 +558,7 @@ interface ResolvedBuildOptions {
 
 interface StagePackageJson {
   readonly name: string;
+  readonly productName: string;
   readonly version: string;
   readonly buildVersion: string;
   readonly t3codeCommitHash: string;
@@ -747,7 +748,7 @@ export function resolveMacPasskeySigningConfiguration(
   }
 
   return {
-    appId: DESKTOP_APP_ID,
+    appId: resolveDesktopAppId(env),
     teamId,
     rpDomains: uniqueRpDomains,
     provisioningProfilePath,
@@ -1357,10 +1358,23 @@ export function resolvePackageManagerUserAgent(packageManager: string): string {
   return `${trimmed.slice(0, versionSeparator)}/${trimmed.slice(versionSeparator + 1)}`;
 }
 
-export function resolveDesktopProductName(version: string): string {
+export function resolveDesktopAppId(env: NodeJS.ProcessEnv = process.env): string {
+  return env.T3CODE_DESKTOP_APP_ID?.trim() || DESKTOP_APP_ID;
+}
+
+export function resolveDesktopProductName(
+  version: string,
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  const override = env.T3CODE_DESKTOP_PRODUCT_NAME?.trim();
+  if (override) return override;
   return resolveDesktopUpdateChannel(version) === "nightly"
     ? "T3 Code (Nightly)"
     : (desktopPackageJson.productName ?? "T3 Code");
+}
+
+export function resolveMacLocalSigningIdentity(env: NodeJS.ProcessEnv = process.env): string {
+  return env.T3CODE_DESKTOP_LOCAL_SIGN_IDENTITY?.trim() || "-";
 }
 
 export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
@@ -1378,7 +1392,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
     | undefined,
 ) {
   const buildConfig: Record<string, unknown> = {
-    appId: DESKTOP_APP_ID,
+    appId: resolveDesktopAppId(),
     productName: resolveDesktopProductName(version),
     artifactName: "T3-Code-${version}-${arch}.${ext}",
     directories: {
@@ -1417,6 +1431,11 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
       target: target === "dmg" ? [target, "zip"] : [target],
       icon: "icon.icns",
       category: "public.app-category.developer-tools",
+      ...(!signed ? { identity: resolveMacLocalSigningIdentity(), hardenedRuntime: false } : {}),
+      extendInfo: {
+        NSMicrophoneUsageDescription:
+          "T3 Code uses the microphone when you start a Live Thread voice session.",
+      },
       protocols: [
         {
           name: "T3 Code",
@@ -1743,6 +1762,7 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
   );
   const stagePackageJson: StagePackageJson = {
     name: "t3code",
+    productName: resolveDesktopProductName(appVersion),
     version: appVersion,
     buildVersion: appVersion,
     t3codeCommitHash: commitHash,
