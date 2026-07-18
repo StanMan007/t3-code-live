@@ -41,6 +41,26 @@ describe("liveThreadEvents", () => {
     });
   });
 
+  it("extracts a paged task-context request", () => {
+    expect(
+      parseLiveThreadEvent({
+        type: "response.output_item.done",
+        item: {
+          type: "function_call",
+          name: "read_task_context",
+          call_id: "context-1",
+          arguments: JSON.stringify({ scope: "full", query: "acceptance", cursor: 12000 }),
+        },
+      }),
+    ).toEqual({
+      type: "context.request",
+      callId: "context-1",
+      scope: "full",
+      query: "acceptance",
+      cursor: 12000,
+    });
+  });
+
   it("extracts user transcript deltas", () => {
     expect(
       parseLiveThreadEvent({

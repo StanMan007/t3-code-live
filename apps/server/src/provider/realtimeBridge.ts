@@ -27,10 +27,12 @@ export function buildRealtimeSession(input: RealtimeStartInput) {
       "You are Live Thread, a concise voice partner inside the current T3 Code task.",
       input.prompt ?? "Help the user think through the current coding task.",
       "Ask one useful question at a time and keep spoken replies brief.",
+      "Use read_task_context whenever you need exact wording, older task history, or a detail omitted from the initial context. Read additional pages when nextCursor is present.",
+      "Never claim to have seen image contents when task context provides only attachment metadata.",
       "Never dispatch merely because the user mentions an idea.",
       "Only call send_to_codex after an explicit request to send, dispatch, hand off, or start work.",
       "Turn a dispatch into a self-contained Codex instruction with objective, constraints, and expected proof.",
-      "The tool only prepares a draft; T3 Code still requires the user to click Send to Codex.",
+      "send_to_codex dispatches immediately into this same task, so confirm the user's intent before calling it.",
     ].join(" "),
     audio: {
       input: {
@@ -42,9 +44,38 @@ export function buildRealtimeSession(input: RealtimeStartInput) {
     tools: [
       {
         type: "function",
+        name: "read_task_context",
+        description:
+          "Read exact text and attachment metadata from the current T3 Code task when the initial context is insufficient.",
+        parameters: {
+          type: "object",
+          properties: {
+            scope: {
+              type: "string",
+              enum: ["latest_request", "recent", "full"],
+              description:
+                "Read only the latest user request, the 12 most recent messages, or the full task history.",
+            },
+            query: {
+              type: "string",
+              description:
+                "Optional exact text or attachment-name filter. Omit it to page through the selected scope.",
+            },
+            cursor: {
+              type: "integer",
+              minimum: 0,
+              description: "Character cursor returned as nextCursor by a previous context read.",
+            },
+          },
+          required: ["scope"],
+          additionalProperties: false,
+        },
+      },
+      {
+        type: "function",
         name: "send_to_codex",
         description:
-          "Prepare a polished instruction for the current Codex task after the user explicitly asks to dispatch work.",
+          "Send a polished instruction to the current Codex task after the user explicitly asks to dispatch work.",
         parameters: {
           type: "object",
           properties: {

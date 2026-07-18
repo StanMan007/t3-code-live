@@ -6,6 +6,13 @@ export type LiveThreadEvent =
     }
   | { readonly type: "transcript.done"; readonly role: "user" | "assistant"; readonly text: string }
   | { readonly type: "handoff"; readonly text: string; readonly callId?: string }
+  | {
+      readonly type: "context.request";
+      readonly callId: string;
+      readonly scope: "latest_request" | "recent" | "full";
+      readonly query?: string;
+      readonly cursor?: number;
+    }
   | { readonly type: "error"; readonly message: string }
   | { readonly type: "ignored" };
 
@@ -60,15 +67,40 @@ function handoff(
   return undefined;
 }
 
+function contextRequest(candidate: Record<string, unknown>): LiveThreadEvent | undefined {
+  if (candidate.type !== "function_call" || candidate.name !== "read_task_context") {
+    return undefined;
+  }
+  const args = parseArguments(candidate.arguments);
+  const callId = text(candidate.call_id);
+  const scope = text(args?.scope);
+  if (!callId || (scope !== "latest_request" && scope !== "recent" && scope !== "full")) {
+    return undefined;
+  }
+  const query = text(args?.query);
+  const rawCursor = args?.cursor;
+  const cursor =
+    typeof rawCursor === "number" && Number.isFinite(rawCursor) ? rawCursor : undefined;
+  return {
+    type: "context.request",
+    callId,
+    scope,
+    ...(query ? { query } : {}),
+    ...(cursor === undefined ? {} : { cursor }),
+  };
+}
+
 export function parseLiveThreadEvent(input: unknown): LiveThreadEvent {
   const event = record(input);
   if (!event) return { type: "ignored" };
   const eventType = text(event.type) ?? "";
   const item = record(event.item);
   const nestedOutputs = record(event.response)?.output;
-  const responseHandoff = Array.isArray(nestedOutputs)
-    ? nestedOutputs.map(record).find((candidate) => candidate && handoff(candidate))
-    : undefined;
+  const candidates = [item, event];
+  if (Array.isArray(nestedOutputs)) candidates.push(...nestedOutputs.map(record));
+  const requestedContext = candidates.find((candidate) => candidate && contextRequest(candidate));
+  if (requestedContext) return contextRequest(requestedContext) ?? { type: "ignored" };
+  const responseHandoff = candidates.find((candidate) => candidate && handoff(candidate));
   const preparedHandoff =
     (item ? handoff(item) : undefined) ??
     handoff(event) ??
