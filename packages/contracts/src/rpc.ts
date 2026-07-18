@@ -150,6 +150,12 @@ import {
   RealtimeStartResult,
   RealtimeStopInput,
 } from "./realtime.ts";
+import {
+  LiveForkRebuildError,
+  LiveForkRebuildResult,
+  LiveForkUpdateInput,
+  LiveForkUpdateResult,
+} from "./liveForkUpdate.ts";
 
 export const WS_METHODS = {
   // Project registry methods
@@ -172,6 +178,11 @@ export const WS_METHODS = {
   realtimeStart: "realtime.start",
   realtimeStop: "realtime.stop",
   realtimeAppendSpeech: "realtime.appendSpeech",
+
+  // T3 Code Live source updater
+  liveForkUpdateCheck: "liveForkUpdate.check",
+  liveForkUpdateMerge: "liveForkUpdate.merge",
+  liveForkRebuild: "liveFork.rebuild",
 
   // VCS methods
   vcsPull: "vcs.pull",
@@ -423,6 +434,24 @@ export const WsRealtimeAppendSpeechRpc = Rpc.make(WS_METHODS.realtimeAppendSpeec
   payload: RealtimeAppendSpeechInput,
   success: Schema.Void,
   error: Schema.Union([RealtimeBridgeError, EnvironmentAuthorizationError]),
+});
+
+export const WsLiveForkUpdateCheckRpc = Rpc.make(WS_METHODS.liveForkUpdateCheck, {
+  payload: LiveForkUpdateInput,
+  success: LiveForkUpdateResult,
+  error: Schema.Union([GitCommandError, EnvironmentAuthorizationError]),
+});
+
+export const WsLiveForkUpdateMergeRpc = Rpc.make(WS_METHODS.liveForkUpdateMerge, {
+  payload: LiveForkUpdateInput,
+  success: LiveForkUpdateResult,
+  error: Schema.Union([GitCommandError, EnvironmentAuthorizationError]),
+});
+
+export const WsLiveForkRebuildRpc = Rpc.make(WS_METHODS.liveForkRebuild, {
+  payload: LiveForkUpdateInput,
+  success: LiveForkRebuildResult,
+  error: Schema.Union([GitCommandError, LiveForkRebuildError, EnvironmentAuthorizationError]),
 });
 
 export const WsSubscribeVcsStatusRpc = Rpc.make(WS_METHODS.subscribeVcsStatus, {
@@ -739,6 +768,9 @@ export const WsRpcGroup = RpcGroup.make(
   WsRealtimeStartRpc,
   WsRealtimeStopRpc,
   WsRealtimeAppendSpeechRpc,
+  WsLiveForkUpdateCheckRpc,
+  WsLiveForkUpdateMergeRpc,
+  WsLiveForkRebuildRpc,
   WsSubscribeVcsStatusRpc,
   WsVcsPullRpc,
   WsVcsRefreshStatusRpc,

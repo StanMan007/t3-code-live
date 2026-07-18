@@ -26,4 +26,5 @@ export * from "./review.ts";
 export * from "./preview.ts";
 export * from "./previewAutomation.ts";
 export * from "./realtime.ts";
+export * from "./liveForkUpdate.ts";
 export * from "./rpc.ts";

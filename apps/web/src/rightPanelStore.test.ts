@@ -127,6 +127,18 @@ describe("rightPanelStore", () => {
     });
   });
 
+  it("opens Live Thread as a thread-scoped singleton surface", () => {
+    useRightPanelStore.getState().open(refA, "live-thread");
+    useRightPanelStore.getState().open(refA, "live-thread");
+
+    expect(selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA)).toEqual({
+      isOpen: true,
+      activeSurfaceId: "live-thread",
+      surfaces: [{ id: "live-thread", kind: "live-thread" }],
+    });
+    expect(selectActiveRightPanel(useRightPanelStore.getState().byThreadKey, refB)).toBeNull();
+  });
+
   it("replaces the standalone explorer with peer file surfaces", () => {
     useRightPanelStore.getState().open(refA, "files");
     useRightPanelStore.getState().openFile(refA, "src/index.ts");

@@ -2553,6 +2553,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
               >
                 <LiveThreadControl
                   environmentId={environmentId}
+                  threadRef={routeThreadRef}
                   threadId={activeThreadId}
                   messages={activeThread?.messages ?? []}
                   enabled={

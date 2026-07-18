@@ -8,7 +8,7 @@ import {
 } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 import {
-  buildLiveForkUpdatePrompt,
+  buildLiveForkMergeRepairPrompt,
   findLiveForkSourceProject,
   resolveLiveForkUpdaterModelSelection,
 } from "./forkSourceUpdate.logic";
@@ -64,21 +64,30 @@ describe("findLiveForkSourceProject", () => {
   });
 });
 
-describe("buildLiveForkUpdatePrompt", () => {
-  it("includes the repository, safety boundaries, proof gates, and custom identity", () => {
-    const prompt = buildLiveForkUpdatePrompt({
+describe("buildLiveForkMergeRepairPrompt", () => {
+  it("includes the repository, conflict context, safety boundaries, and Live Thread identity", () => {
+    const prompt = buildLiveForkMergeRepairPrompt({
       workspaceRoot: "/Users/example/t3code",
       installedVersion: "0.0.29-nightly.1",
+      updateResult: {
+        status: "needs_agent",
+        branch: "main",
+        currentSha: "abc123",
+        upstreamSha: "def456",
+        localAhead: 5,
+        upstreamAhead: 2,
+        conflictingFiles: ["apps/web/src/components/chat/ChatComposer.tsx"],
+        detail: "The automatic merge stopped on conflicts.",
+      },
     });
 
     expect(prompt).toContain("/Users/example/t3code");
     expect(prompt).toContain("0.0.29-nightly.1");
     expect(prompt).toContain("Never rebase, reset, force-push");
-    expect(prompt).toContain("branch is not `main`");
-    expect(prompt).toContain("git merge --no-edit upstream/main");
-    expect(prompt).toContain("com.stanman.t3codelive");
-    expect(prompt).toContain('report "already current"');
-    expect(prompt).toContain("Do not test or build");
+    expect(prompt).toContain("ChatComposer.tsx");
+    expect(prompt).toContain("Live Thread real-time agent");
+    expect(prompt).toContain("finish the merge commit");
+    expect(prompt).toContain("Never push, open a PR, publish, build, install");
   });
 });
 

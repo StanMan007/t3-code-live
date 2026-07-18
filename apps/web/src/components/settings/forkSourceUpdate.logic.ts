@@ -1,6 +1,7 @@
 import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
 import type {
   EnvironmentId,
+  LiveForkUpdateResult,
   ModelSelection,
   ProviderOptionSelection,
   ServerProvider,
@@ -120,32 +121,38 @@ export function resolveLiveForkUpdaterModelSelection(input: {
   return null;
 }
 
-export function buildLiveForkUpdatePrompt(input: {
+export function buildLiveForkMergeRepairPrompt(input: {
   readonly workspaceRoot: string;
   readonly installedVersion: string;
+  readonly updateResult: LiveForkUpdateResult;
 }): string {
-  return `Check and, only when necessary, update T3 Code Live at ${input.workspaceRoot}.
+  const conflictSummary =
+    input.updateResult.conflictingFiles.length > 0
+      ? input.updateResult.conflictingFiles.map((file) => `  - ${file}`).join("\n")
+      : "  - Git did not report specific unmerged files; inspect the repository state.";
+
+  return `Finish the interrupted T3 Code Live upstream update at ${input.workspaceRoot}.
 
 Installed version: ${input.installedVersion}. Use the assigned GPT-5.6-Sol model on High reasoning.
+Automatic updater detail: ${input.updateResult.detail ?? "The automatic merge needs assistance."}
+
+Conflicting or blocked files:
+${conflictSummary}
 
 Rules:
 - Read AGENTS.md. Work only in the current checkout and branch.
-- Never rebase, reset, force-push, discard, or automatically stash work.
-- Never push, open a PR, publish, or replace the installed app without explicit approval in this task.
-- Preserve Live Thread and this updater as an additive layer over upstream.
+- Preserve exactly one fork feature: the Live Thread real-time agent and its guarded updater. Keep it additive over upstream T3 Code behavior.
+- Never rebase, reset, force-push, discard, abort the merge, or automatically stash work.
+- Never push, open a PR, publish, build, install, or replace the app without explicit approval in this task.
 
-Run this decision flow:
-1. Inspect: \`git status --short --branch\` and \`git log -5 --oneline\`. If the branch is not \`main\`, stop without changing anything.
-2. Run the shared read-only checker: \`./scripts/check-t3-code-live-upstream.sh\`. It fetches and reports both SHAs plus \`upstream_ahead\`.
-3. If \`upstream_ahead=0\`, report "already current" and stop. Do not test or build.
-4. If upstream is ahead and the worktree is not clean, stop without changing files and report the blocker.
-5. If upstream is ahead and the worktree is clean, run \`git merge --no-edit upstream/main\`. Never rebase. Preserve the custom seams. Resolve only obvious conflicts; otherwise run \`git merge --abort\` and report the conflicting files.
-6. After a successful merge, run:
+Run this repair flow:
+1. Inspect \`git status --short --branch\`, \`git diff --name-only --diff-filter=U\`, and the current merge state.
+2. Resolve the existing upstream merge conflicts. Prefer upstream behavior everywhere except the intentional Live Thread integration seams documented in \`docs/t3-code-live.md\`.
+3. Stage the resolved files and finish the merge commit. Do not rewrite existing history.
+4. Run:
    - \`./node_modules/.bin/vp check\`
    - \`./node_modules/.bin/vp run -r --concurrency-limit 2 typecheck\`
    - the focused Live Thread and updater tests, followed by broader tests only when the changed surface warrants them.
-7. Only after those gates pass, build the arm64 DMG with app id \`com.stanman.t3codelive\`, product name \`T3 Code Live (Nightly)\`, and signing identity \`Apple Development: Jonathan Stanley (P8U8347VLY)\`.
-8. Verify the artifact signature, embedded commit SHA, architecture, and checksum. Use Computer Use for UI proof only after an actual merge/build.
 
-Finish with: comparison result, merge result, checks run, artifact evidence if built, and the one next action required from me.`;
+Finish with: conflicts resolved, Live Thread preservation evidence, checks run, and the one next action required from me.`;
 }

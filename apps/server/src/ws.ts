@@ -91,6 +91,8 @@ import * as WorkspacePaths from "./workspace/WorkspacePaths.ts";
 import * as VcsStatusBroadcaster from "./vcs/VcsStatusBroadcaster.ts";
 import * as VcsProvisioningService from "./vcs/VcsProvisioningService.ts";
 import * as GitWorkflowService from "./git/GitWorkflowService.ts";
+import * as LiveForkUpdater from "./git/LiveForkUpdater.ts";
+import * as LiveForkRebuilder from "./git/LiveForkRebuilder.ts";
 import * as ReviewService from "./review/ReviewService.ts";
 import * as ProjectSetupScriptRunner from "./project/ProjectSetupScriptRunner.ts";
 import * as RepositoryIdentityResolver from "./project/RepositoryIdentityResolver.ts";
@@ -316,6 +318,9 @@ const RPC_REQUIRED_SCOPE = new Map<string, AuthEnvironmentScope>([
   [WS_METHODS.realtimeStart, AuthOrchestrationOperateScope],
   [WS_METHODS.realtimeStop, AuthOrchestrationOperateScope],
   [WS_METHODS.realtimeAppendSpeech, AuthOrchestrationOperateScope],
+  [WS_METHODS.liveForkUpdateCheck, AuthOrchestrationReadScope],
+  [WS_METHODS.liveForkUpdateMerge, AuthOrchestrationOperateScope],
+  [WS_METHODS.liveForkRebuild, AuthOrchestrationOperateScope],
   [WS_METHODS.subscribeVcsStatus, AuthOrchestrationReadScope],
   [WS_METHODS.vcsRefreshStatus, AuthOrchestrationReadScope],
   [WS_METHODS.vcsPull, AuthOrchestrationOperateScope],
@@ -409,6 +414,7 @@ const makeWsRpcLayer = (
       const keybindings = yield* Keybindings.Keybindings;
       const externalLauncher = yield* ExternalLauncher.ExternalLauncher;
       const gitWorkflow = yield* GitWorkflowService.GitWorkflowService;
+      const gitVcs = yield* GitVcsDriver.GitVcsDriver;
       const review = yield* ReviewService.ReviewService;
       const vcsProvisioning = yield* VcsProvisioningService.VcsProvisioningService;
       const vcsStatusBroadcaster = yield* VcsStatusBroadcaster.VcsStatusBroadcaster;
@@ -1539,6 +1545,31 @@ const makeWsRpcLayer = (
           observeRpcEffect(WS_METHODS.realtimeAppendSpeech, appendRealtimeSpeechBridge(input), {
             "rpc.aggregate": "realtime",
           }),
+        [WS_METHODS.liveForkUpdateCheck]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.liveForkUpdateCheck,
+            LiveForkUpdater.check(input.cwd).pipe(
+              Effect.provideService(GitVcsDriver.GitVcsDriver, gitVcs),
+            ),
+            { "rpc.aggregate": "git" },
+          ),
+        [WS_METHODS.liveForkUpdateMerge]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.liveForkUpdateMerge,
+            LiveForkUpdater.merge(input.cwd).pipe(
+              Effect.provideService(GitVcsDriver.GitVcsDriver, gitVcs),
+              Effect.tap(() => refreshGitStatus(input.cwd)),
+            ),
+            { "rpc.aggregate": "git" },
+          ),
+        [WS_METHODS.liveForkRebuild]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.liveForkRebuild,
+            LiveForkRebuilder.start(input.cwd).pipe(
+              Effect.provideService(GitVcsDriver.GitVcsDriver, gitVcs),
+            ),
+            { "rpc.aggregate": "git" },
+          ),
         [WS_METHODS.subscribeVcsStatus]: (input) =>
           observeRpcStream(
             WS_METHODS.subscribeVcsStatus,

@@ -1,11 +1,13 @@
-import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
+import type { EnvironmentId, ScopedThreadRef, ThreadId } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/unstable/reactivity";
 import { ArrowUpIcon, MicIcon, SquareIcon, WavesIcon } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 
 import type { ChatMessage } from "../../types";
 import { cn } from "~/lib/utils";
+import { selectThreadRightPanelState, useRightPanelStore } from "~/rightPanelStore";
 import { realtimeEnvironment } from "~/state/realtime";
 import { useAtomCommand } from "~/state/use-atom-command";
 import { Button } from "../ui/button";
@@ -25,6 +27,8 @@ type LiveThreadPhase =
   | "sent"
   | "stopping"
   | "error";
+
+export const LIVE_THREAD_PANEL_PORTAL_ID = "t3-live-thread-panel";
 
 function waitForIceGathering(peer: RTCPeerConnection): Promise<void> {
   if (peer.iceGatheringState === "complete") return Promise.resolve();
@@ -55,17 +59,27 @@ function sendToolOutput(channel: RTCDataChannel, callId: string, output: unknown
 
 export function LiveThreadControl(props: {
   readonly environmentId: EnvironmentId;
+  readonly threadRef: ScopedThreadRef;
   readonly threadId: ThreadId | null;
   readonly messages: ReadonlyArray<ChatMessage>;
   readonly enabled: boolean;
   readonly onDispatch: (instruction: string) => void;
 }) {
   const startRealtime = useAtomCommand(realtimeEnvironment.start, { reportFailure: false });
+  const liveThreadSurfaceActive = useRightPanelStore((state) => {
+    const panel = selectThreadRightPanelState(state.byThreadKey, props.threadRef);
+    return panel.isOpen && panel.activeSurfaceId === "live-thread";
+  });
+  const liveThreadSurfacePresent = useRightPanelStore((state) => {
+    const panel = selectThreadRightPanelState(state.byThreadKey, props.threadRef);
+    return panel.surfaces.some((surface) => surface.kind === "live-thread");
+  });
   const [phase, setPhase] = useState<LiveThreadPhase>("idle");
   const [transcript, setTranscript] = useState("");
   const [handoff, setHandoff] = useState("");
   const [contextReads, setContextReads] = useState(0);
   const [error, setError] = useState("");
+  const [portalTarget, setPortalTarget] = useState<HTMLElement | null>(null);
   const peerRef = useRef<RTCPeerConnection | null>(null);
   const channelRef = useRef<RTCDataChannel | null>(null);
   const mediaRef = useRef<MediaStream | null>(null);
@@ -77,6 +91,11 @@ export function LiveThreadControl(props: {
   const latestUserTranscriptRef = useRef("");
   const knownMessageIdsRef = useRef(new Set<string>());
   const spokenMessageIdsRef = useRef(new Set<string>());
+  const surfaceWasPresentRef = useRef(liveThreadSurfacePresent);
+
+  const openSurface = useCallback(() => {
+    useRightPanelStore.getState().open(props.threadRef, "live-thread");
+  }, [props.threadRef]);
 
   const releaseBrowserMedia = useCallback(() => {
     channelRef.current?.close();
@@ -279,7 +298,20 @@ export function LiveThreadControl(props: {
     [releaseBrowserMedia],
   );
 
-  const active = phase !== "idle";
+  useEffect(() => {
+    if (surfaceWasPresentRef.current && !liveThreadSurfacePresent && activeRef.current) {
+      void stop();
+    }
+    surfaceWasPresentRef.current = liveThreadSurfacePresent;
+  }, [liveThreadSurfacePresent, stop]);
+
+  useLayoutEffect(() => {
+    setPortalTarget(
+      liveThreadSurfaceActive ? document.getElementById(LIVE_THREAD_PANEL_PORTAL_ID) : null,
+    );
+  }, [liveThreadSurfaceActive]);
+
+  const active = phase !== "idle" && phase !== "error";
   const status =
     phase === "requesting"
       ? "Waiting for microphone"
@@ -293,105 +325,162 @@ export function LiveThreadControl(props: {
               ? "Stopping"
               : phase === "error"
                 ? "Needs attention"
-                : "Start Live Thread";
+                : phase === "idle"
+                  ? "Ready"
+                  : "Needs attention";
 
-  return (
-    <div className="relative flex shrink-0 items-center">
-      <audio ref={audioRef} autoPlay className="hidden" />
-      {active ? (
-        <div className="border-border/70 bg-background/98 absolute right-0 bottom-full z-50 mb-2 w-[min(24rem,calc(100vw-2rem))] border p-3 shadow-xl backdrop-blur-sm">
-          <div className="flex items-center justify-between gap-3">
-            <div className="flex min-w-0 items-center gap-2">
+  const panel = (
+    <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-6 py-8 sm:px-8">
+      <div className="mx-auto flex w-full max-w-xl flex-1 flex-col">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <div className="flex items-center gap-2.5">
               <WavesIcon className={cn("size-4", phase === "listening" && "text-emerald-400")} />
-              <div className="min-w-0">
-                <p className="text-foreground text-xs font-medium">Live Thread</p>
-                <p className="text-muted-foreground truncate text-[11px]">{status}</p>
-              </div>
+              <h2 className="text-sm font-medium text-foreground">Live Thread</h2>
             </div>
+            <p className="mt-1.5 text-xs text-muted-foreground">
+              Talk through the current task. Codex only sends a follow-up after explicit approval.
+            </p>
+          </div>
+          {phase !== "idle" ? (
             <Button
               type="button"
-              variant="ghost"
-              size="icon-sm"
+              variant="outline"
+              size="sm"
               onClick={() => void stop()}
-              aria-label="Stop Live Thread"
+              disabled={phase === "stopping"}
             >
-              <SquareIcon className="size-3.5" />
+              <SquareIcon className="size-3" />
+              End
             </Button>
+          ) : null}
+        </div>
+
+        <div className="flex flex-1 flex-col items-center justify-center py-10 text-center">
+          <div className="relative flex size-40 items-center justify-center" aria-hidden>
+            <div
+              className={cn(
+                "absolute size-40 rounded-full border border-border/50 transition-all duration-700",
+                phase === "listening" && "scale-105 border-emerald-400/30",
+              )}
+            />
+            <div
+              className={cn(
+                "absolute size-28 rounded-full border border-border/70 bg-muted/20 transition-all duration-500",
+                phase === "listening" && "animate-pulse border-emerald-400/40 bg-emerald-400/5",
+                phase === "error" && "border-red-400/40 bg-red-400/5",
+              )}
+            />
+            <div
+              className={cn(
+                "relative flex size-16 items-center justify-center rounded-full bg-foreground text-background shadow-lg transition-all duration-300",
+                phase === "listening" && "scale-105 bg-emerald-400 text-emerald-950",
+                phase === "error" && "bg-red-400 text-red-950",
+              )}
+            >
+              <WavesIcon className="size-6" />
+            </div>
           </div>
-          <p className="text-muted-foreground mt-2 text-[11px]">
-            Reads task messages · Sends explicit follow-ups
+
+          <p className="mt-6 text-base font-medium text-foreground">{status}</p>
+          <p className="mt-1 text-xs text-muted-foreground">
             {contextReads > 0
-              ? ` · ${contextReads} context read${contextReads === 1 ? "" : "s"}`
-              : ""}
+              ? `${contextReads} task context read${contextReads === 1 ? "" : "s"}`
+              : "Task messages available on request"}
           </p>
-          {error ? <p className="mt-2 text-xs text-red-400">{error}</p> : null}
+
+          {error ? <p className="mt-5 max-w-md text-sm leading-6 text-red-400">{error}</p> : null}
           {transcript && !handoff ? (
-            <p className="text-muted-foreground mt-2 line-clamp-3 text-xs leading-5">
+            <p className="mt-6 max-w-lg text-pretty text-lg leading-8 text-foreground/90">
               {transcript}
             </p>
           ) : null}
+
+          {phase === "idle" || phase === "error" ? (
+            <Button type="button" size="sm" className="mt-6" onClick={() => void start()}>
+              <MicIcon className="size-4" />
+              {phase === "error" ? "Try again" : "Start talking"}
+            </Button>
+          ) : null}
+        </div>
+
+        <div className="border-t border-border/70 pt-4">
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-[11px] text-muted-foreground">
+            <span>Task context</span>
+            <span>Explicit follow-ups only</span>
+            <span>Microphone stays local until connected</span>
+          </div>
           {handoff ? (
-            <div className="border-border/70 mt-3 border-t pt-3">
+            <div className="mt-5 border-t border-border/70 pt-5">
               {phase === "sent" ? (
                 <div>
-                  <p className="text-muted-foreground text-[11px]">Sent request</p>
-                  <p className="text-foreground/90 mt-1 line-clamp-4 text-xs leading-5">
-                    {handoff}
-                  </p>
+                  <p className="text-[11px] text-muted-foreground">Sent request</p>
+                  <p className="mt-2 text-sm leading-6 text-foreground/90">{handoff}</p>
                 </div>
               ) : (
                 <div>
-                  <label
-                    className="text-muted-foreground text-[11px]"
-                    htmlFor="live-thread-handoff"
-                  >
+                  <label className="text-xs text-muted-foreground" htmlFor="live-thread-handoff">
                     Review follow-up
                   </label>
                   <textarea
                     id="live-thread-handoff"
                     value={handoff}
                     onChange={(event) => setHandoff(event.target.value)}
-                    className="border-border bg-background text-foreground mt-1 min-h-28 w-full resize-y border p-2 text-xs leading-5 outline-none"
+                    className="mt-2 min-h-32 w-full resize-y rounded-md border border-border bg-background p-3 text-sm leading-6 text-foreground outline-none focus:border-ring"
                   />
-                  <Button type="button" size="sm" className="mt-2 w-full" onClick={dispatch}>
-                    <ArrowUpIcon className="size-3.5" />
-                    Send request to Codex
-                  </Button>
+                  <div className="mt-3 flex justify-end">
+                    <Button type="button" size="sm" onClick={dispatch}>
+                      <ArrowUpIcon className="size-3.5" />
+                      Send to Codex
+                    </Button>
+                  </div>
                 </div>
               )}
             </div>
           ) : null}
         </div>
-      ) : null}
-      <Tooltip>
-        <TooltipTrigger
-          render={
-            <Button
-              type="button"
-              variant={active ? "secondary" : "ghost"}
-              size="icon-sm"
-              disabled={
-                !props.enabled ||
-                phase === "requesting" ||
-                phase === "connecting" ||
-                phase === "stopping"
-              }
-              onClick={() => (active ? void stop() : void start())}
-              aria-label={active ? "Stop Live Thread" : "Start Live Thread"}
-              className={cn(active && "text-emerald-400")}
-            >
-              {active ? <SquareIcon className="size-3.5" /> : <MicIcon className="size-4" />}
-            </Button>
-          }
-        />
-        <TooltipPopup side="top">
-          {props.enabled
-            ? active
-              ? "Stop Live Thread"
-              : "Talk through this task"
-            : "Live Thread requires an active Codex task"}
-        </TooltipPopup>
-      </Tooltip>
+      </div>
     </div>
+  );
+
+  return (
+    <>
+      <div className="relative flex shrink-0 items-center">
+        <audio ref={audioRef} autoPlay className="hidden" />
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <Button
+                type="button"
+                variant={active || liveThreadSurfaceActive ? "secondary" : "ghost"}
+                size="icon-sm"
+                disabled={
+                  !props.enabled ||
+                  phase === "requesting" ||
+                  phase === "connecting" ||
+                  phase === "stopping"
+                }
+                onClick={() => {
+                  openSurface();
+                  if (phase === "idle") void start();
+                }}
+                aria-label="Open Live Thread"
+                className={cn(active && "text-emerald-400")}
+              >
+                {active ? <WavesIcon className="size-4" /> : <MicIcon className="size-4" />}
+              </Button>
+            }
+          />
+          <TooltipPopup side="top">
+            {props.enabled
+              ? active
+                ? "Open Live Thread"
+                : "Talk through this task"
+              : "Live Thread requires an active Codex task"}
+          </TooltipPopup>
+        </Tooltip>
+      </div>
+      {portalTarget ? createPortal(panel, portalTarget) : null}
+    </>
   );
 }

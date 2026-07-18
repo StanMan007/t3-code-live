@@ -1,6 +1,15 @@
 import type { ContextMenuItem, PreviewSessionSnapshot } from "@t3tools/contracts";
 import { getTerminalLabel } from "@t3tools/shared/terminalLabels";
-import { ClipboardList, FileDiff, Files, Globe2, Plus, TerminalSquare, X } from "lucide-react";
+import {
+  AudioWaveform,
+  ClipboardList,
+  FileDiff,
+  Files,
+  Globe2,
+  Plus,
+  TerminalSquare,
+  X,
+} from "lucide-react";
 import {
   type MouseEvent as ReactMouseEvent,
   type ReactElement,
@@ -41,10 +50,12 @@ interface RightPanelTabsProps {
   onCloseAllSurfaces: () => void;
   onCopyFilePath: (relativePath: string) => void;
   onAddBrowser: () => void;
+  onAddLiveThread: () => void;
   onAddTerminal: () => void;
   onAddDiff: () => void;
   onAddFiles: () => void;
   browserAvailable: boolean;
+  liveThreadAvailable: boolean;
   diffAvailable: boolean;
   filesAvailable: boolean;
   children: ReactNode;
@@ -54,6 +65,7 @@ const SURFACE_DISABLED_REASONS = {
   browser: "Browser previews are only available in the T3 Code desktop app.",
   files: "Files are only available when a project is open.",
   diff: "Diff is only available for server threads in Git repositories.",
+  liveThread: "Live Thread requires an active Codex task.",
 } as const;
 
 type TabContextMenuAction = "copy-path" | "close" | "close-others" | "close-to-right" | "close-all";
@@ -88,14 +100,25 @@ function SurfaceMenuItem(props: {
 
 function RightPanelEmptyState(props: {
   onAddBrowser: () => void;
+  onAddLiveThread: () => void;
   onAddTerminal: () => void;
   onAddDiff: () => void;
   onAddFiles: () => void;
   browserAvailable: boolean;
+  liveThreadAvailable: boolean;
   diffAvailable: boolean;
   filesAvailable: boolean;
 }) {
   const actions = [
+    {
+      label: "Live Thread",
+      description: "Talk through this task with Codex.",
+      icon: AudioWaveform,
+      available: props.liveThreadAvailable,
+      disabledReason: SURFACE_DISABLED_REASONS.liveThread,
+      onClick: props.onAddLiveThread,
+      featured: true,
+    },
     {
       label: "Browser",
       description: "Open a local app or URL.",
@@ -103,6 +126,7 @@ function RightPanelEmptyState(props: {
       available: props.browserAvailable,
       disabledReason: SURFACE_DISABLED_REASONS.browser,
       onClick: props.onAddBrowser,
+      featured: false,
     },
     {
       label: "Terminal",
@@ -111,6 +135,7 @@ function RightPanelEmptyState(props: {
       available: true,
       disabledReason: null,
       onClick: props.onAddTerminal,
+      featured: false,
     },
     {
       label: "Files",
@@ -119,6 +144,7 @@ function RightPanelEmptyState(props: {
       available: props.filesAvailable,
       disabledReason: SURFACE_DISABLED_REASONS.files,
       onClick: props.onAddFiles,
+      featured: false,
     },
     {
       label: "Diff",
@@ -127,6 +153,7 @@ function RightPanelEmptyState(props: {
       available: props.diffAvailable,
       disabledReason: SURFACE_DISABLED_REASONS.diff,
       onClick: props.onAddDiff,
+      featured: false,
     },
   ] as const;
 
@@ -157,7 +184,10 @@ function RightPanelEmptyState(props: {
                   key={action.label}
                   type="button"
                   onClick={action.onClick}
-                  className="flex min-h-28 w-full flex-col items-start rounded-lg border border-border/80 bg-card/40 p-4 text-left transition hover:border-border hover:bg-accent/60"
+                  className={cn(
+                    "flex min-h-28 w-full flex-col items-start rounded-lg border border-border/80 bg-card/40 p-4 text-left transition hover:border-border hover:bg-accent/60",
+                    action.featured && "col-span-2 min-h-24",
+                  )}
                 >
                   {content}
                 </button>
@@ -166,7 +196,10 @@ function RightPanelEmptyState(props: {
             const disabledCard = (
               <button
                 type="button"
-                className="flex min-h-28 w-full cursor-not-allowed flex-col items-start rounded-lg border border-border/80 bg-card/40 p-4 text-left opacity-40"
+                className={cn(
+                  "flex min-h-28 w-full cursor-not-allowed flex-col items-start rounded-lg border border-border/80 bg-card/40 p-4 text-left opacity-40",
+                  action.featured && "col-span-2 min-h-24",
+                )}
                 aria-disabled="true"
               >
                 {content}
@@ -194,6 +227,8 @@ function surfaceTitle(
   switch (surface.kind) {
     case "diff":
       return "Diff";
+    case "live-thread":
+      return "Live Thread";
     case "files":
       return "Files";
     case "file":
@@ -251,6 +286,8 @@ function SurfaceIcon({
     }
     case "diff":
       return <FileDiff className="size-3.5 shrink-0" />;
+    case "live-thread":
+      return <AudioWaveform className="size-3.5 shrink-0" />;
     case "files":
       return <Files className="size-3.5 shrink-0" />;
     case "file":
@@ -443,6 +480,14 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
                 </MenuTrigger>
                 <MenuPopup align="start" side="bottom" sideOffset={6} className="min-w-44">
                   <SurfaceMenuItem
+                    available={props.liveThreadAvailable}
+                    disabledReason={SURFACE_DISABLED_REASONS.liveThread}
+                    onClick={props.onAddLiveThread}
+                  >
+                    <AudioWaveform />
+                    Live Thread
+                  </SurfaceMenuItem>
+                  <SurfaceMenuItem
                     available={props.browserAvailable}
                     disabledReason={SURFACE_DISABLED_REASONS.browser}
                     onClick={props.onAddBrowser}
@@ -481,10 +526,12 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
         {props.activeSurfaceId === null ? (
           <RightPanelEmptyState
             onAddBrowser={props.onAddBrowser}
+            onAddLiveThread={props.onAddLiveThread}
             onAddTerminal={props.onAddTerminal}
             onAddDiff={props.onAddDiff}
             onAddFiles={props.onAddFiles}
             browserAvailable={props.browserAvailable}
+            liveThreadAvailable={props.liveThreadAvailable}
             diffAvailable={props.diffAvailable}
             filesAvailable={props.filesAvailable}
           />
