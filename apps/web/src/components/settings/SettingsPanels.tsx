@@ -5,7 +5,6 @@ import { useAtomValue } from "@effect/atom-react";
 import {
   defaultInstanceIdForDriver,
   type DesktopUpdateChannel,
-  type ModelSelection,
   PROVIDER_DISPLAY_NAMES,
   ProviderDriverKind,
   type ProviderInstanceConfig,
@@ -97,7 +96,11 @@ import {
 } from "./settingsLayout";
 import { ProjectFavicon } from "../ProjectFavicon";
 import { useAtomCommand } from "../../state/use-atom-command";
-import { buildLiveForkUpdatePrompt, findLiveForkSourceProject } from "./forkSourceUpdate.logic";
+import {
+  buildLiveForkUpdatePrompt,
+  findLiveForkSourceProject,
+  resolveLiveForkUpdaterModelSelection,
+} from "./forkSourceUpdate.logic";
 
 const THEME_OPTIONS = [
   {
@@ -496,7 +499,7 @@ export function useSettingsRestore(onRestored?: () => void) {
   };
 }
 
-function ForkSourceUpdateRow({ modelSelection }: { readonly modelSelection: ModelSelection }) {
+function ForkSourceUpdateRow() {
   const navigate = useNavigate();
   const primaryEnvironment = usePrimaryEnvironment();
   const projects = useProjects();
@@ -508,18 +511,27 @@ function ForkSourceUpdateRow({ modelSelection }: { readonly modelSelection: Mode
     () => findLiveForkSourceProject(projects, primaryEnvironment?.environmentId ?? null),
     [primaryEnvironment?.environmentId, projects],
   );
+  const serverProviders = useAtomValue(primaryServerProvidersAtom);
+  const updaterModelSelection = useMemo(
+    () =>
+      resolveLiveForkUpdaterModelSelection({
+        providers: serverProviders,
+        projectDefaultModelSelection: sourceProject?.defaultModelSelection ?? null,
+      }),
+    [serverProviders, sourceProject?.defaultModelSelection],
+  );
 
   if (APP_BASE_NAME !== "T3 Code Live") {
     return null;
   }
 
   const launchUpdateTask = async () => {
-    if (!sourceProject || isLaunching) return;
+    if (!sourceProject || !updaterModelSelection || isLaunching) return;
 
     const createdAt = new Date().toISOString();
     const threadId = newThreadId();
     const title = "Update T3 Code Live from upstream";
-    const selectedModel = sourceProject.defaultModelSelection ?? modelSelection;
+    const selectedModel = updaterModelSelection;
     const prompt = buildLiveForkUpdatePrompt({
       workspaceRoot: sourceProject.workspaceRoot,
       installedVersion: APP_VERSION,
@@ -613,15 +625,17 @@ function ForkSourceUpdateRow({ modelSelection }: { readonly modelSelection: Mode
     <SettingsRow
       title="Update T3 Code Live"
       description={
-        sourceProject
+        sourceProject && updaterModelSelection
           ? "Checks upstream in a guarded Codex task, preserves Live Thread, tests it, and prepares a verified build."
-          : "Add the local t3code fork as a project to enable guarded source updates."
+          : sourceProject
+            ? "GPT-5.6-Sol must be available in Codex before this guarded update can run."
+            : "Add the local t3code fork as a project to enable guarded source updates."
       }
       control={
         <Button
           size="xs"
           variant="outline"
-          disabled={!sourceProject || isLaunching}
+          disabled={!sourceProject || !updaterModelSelection || isLaunching}
           onClick={() => void launchUpdateTask()}
         >
           {isLaunching ? (
@@ -1121,7 +1135,7 @@ export function GeneralSettingsPanel() {
             description="Current version of the application."
           />
         )}
-        <ForkSourceUpdateRow modelSelection={textGenerationModelSelection} />
+        <ForkSourceUpdateRow />
         <SettingsRow
           title="Diagnostics"
           description={diagnosticsDescription}

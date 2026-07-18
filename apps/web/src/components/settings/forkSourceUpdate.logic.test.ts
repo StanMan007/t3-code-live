@@ -1,7 +1,17 @@
 import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
-import { EnvironmentId, ProjectId } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  ProjectId,
+  ProviderDriverKind,
+  ProviderInstanceId,
+  type ServerProvider,
+} from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
-import { buildLiveForkUpdatePrompt, findLiveForkSourceProject } from "./forkSourceUpdate.logic";
+import {
+  buildLiveForkUpdatePrompt,
+  findLiveForkSourceProject,
+  resolveLiveForkUpdaterModelSelection,
+} from "./forkSourceUpdate.logic";
 
 const primaryEnvironmentId = EnvironmentId.make("primary");
 
@@ -67,5 +77,84 @@ describe("buildLiveForkUpdatePrompt", () => {
     expect(prompt).toContain("merge upstream/main");
     expect(prompt).toContain("com.stanman.t3codelive");
     expect(prompt).toContain("Use Computer Use");
+  });
+});
+
+describe("resolveLiveForkUpdaterModelSelection", () => {
+  function provider(models: ServerProvider["models"]): ServerProvider {
+    return {
+      instanceId: ProviderInstanceId.make("codex"),
+      driver: ProviderDriverKind.make("codex"),
+      enabled: true,
+      installed: true,
+      version: "1.0.0",
+      status: "ready",
+      auth: { status: "authenticated" },
+      checkedAt: "2026-07-17T00:00:00.000Z",
+      availability: "available",
+      models,
+      slashCommands: [],
+      skills: [],
+    };
+  }
+
+  it("selects GPT-5.6-Sol with the strongest supported reasoning option", () => {
+    const selection = resolveLiveForkUpdaterModelSelection({
+      providers: [
+        provider([
+          {
+            slug: "gpt-5.4",
+            name: "GPT-5.4",
+            isCustom: false,
+            capabilities: null,
+          },
+          {
+            slug: "gpt-5.6-sol",
+            name: "GPT-5.6-Sol",
+            isCustom: false,
+            capabilities: {
+              optionDescriptors: [
+                {
+                  id: "reasoningEffort",
+                  label: "Reasoning",
+                  type: "select",
+                  options: [
+                    { id: "low", label: "Low" },
+                    { id: "high", label: "High" },
+                    { id: "xhigh", label: "Extra High" },
+                  ],
+                  currentValue: "low",
+                },
+              ],
+            },
+          },
+        ]),
+      ],
+      projectDefaultModelSelection: null,
+    });
+
+    expect(selection).toEqual({
+      instanceId: "codex",
+      model: "gpt-5.6-sol",
+      options: [{ id: "reasoningEffort", value: "xhigh" }],
+    });
+  });
+
+  it("refuses to launch when no GPT-5.6 model is available", () => {
+    expect(
+      resolveLiveForkUpdaterModelSelection({
+        providers: [
+          provider([
+            {
+              slug: "gpt-5.4",
+              name: "GPT-5.4",
+              isCustom: false,
+              capabilities: null,
+            },
+          ]),
+        ],
+        projectDefaultModelSelection: null,
+      }),
+    ).toBeNull();
   });
 });

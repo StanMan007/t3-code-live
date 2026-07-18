@@ -1,8 +1,21 @@
 import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
-import type { EnvironmentId } from "@t3tools/contracts";
+import type {
+  EnvironmentId,
+  ModelSelection,
+  ProviderOptionSelection,
+  ServerProvider,
+} from "@t3tools/contracts";
+import { createModelSelection } from "@t3tools/shared/model";
 
 const LIVE_FORK_OWNER = "stanman007";
 const LIVE_FORK_REPOSITORY = "t3-code-live";
+const PREFERRED_UPDATE_MODELS = ["gpt-5.6-sol", "gpt-5.6"] as const;
+const PREFERRED_REASONING_VALUES = ["xhigh", "max", "high"] as const;
+
+type ForkUpdateProvider = Pick<
+  ServerProvider,
+  "availability" | "driver" | "enabled" | "installed" | "instanceId" | "models" | "status"
+>;
 
 function normalizedPathBasename(workspaceRoot: string): string {
   return (
@@ -44,6 +57,62 @@ export function findLiveForkSourceProject(
     .sort((left, right) => right.score - left.score);
 
   return ranked[0]?.project ?? null;
+}
+
+function withStrongReasoning(
+  selection: ModelSelection,
+  providerModel: ForkUpdateProvider["models"][number] | null,
+): ModelSelection {
+  const descriptors = providerModel?.capabilities?.optionDescriptors ?? [];
+  const reasoningDescriptor = descriptors.find((descriptor) => descriptor.id === "reasoningEffort");
+  const reasoningOptions =
+    reasoningDescriptor?.type === "select" ? reasoningDescriptor.options : [];
+  const reasoningValue =
+    PREFERRED_REASONING_VALUES.find((candidate) =>
+      reasoningOptions.some((option) => option.id === candidate),
+    ) ?? "xhigh";
+  const options: ProviderOptionSelection[] = [
+    ...(selection.options?.filter((option) => option.id !== "reasoningEffort") ?? []),
+    { id: "reasoningEffort", value: reasoningValue },
+  ];
+
+  return createModelSelection(selection.instanceId, selection.model, options);
+}
+
+export function resolveLiveForkUpdaterModelSelection(input: {
+  readonly providers: ReadonlyArray<ForkUpdateProvider>;
+  readonly projectDefaultModelSelection: ModelSelection | null;
+}): ModelSelection | null {
+  const availableCodexProviders = input.providers.filter(
+    (provider) =>
+      provider.driver === "codex" &&
+      provider.enabled &&
+      provider.installed &&
+      provider.availability !== "unavailable" &&
+      provider.status !== "error" &&
+      provider.status !== "disabled",
+  );
+
+  for (const preferredModel of PREFERRED_UPDATE_MODELS) {
+    for (const provider of availableCodexProviders) {
+      const model = provider.models.find(
+        (candidate) => candidate.slug.toLowerCase() === preferredModel,
+      );
+      if (model) {
+        return withStrongReasoning(createModelSelection(provider.instanceId, model.slug), model);
+      }
+    }
+  }
+
+  const projectDefault = input.projectDefaultModelSelection;
+  if (projectDefault?.model.toLowerCase().startsWith("gpt-5.6")) {
+    const providerModel = input.providers
+      .find((provider) => provider.instanceId === projectDefault.instanceId)
+      ?.models.find((model) => model.slug === projectDefault.model);
+    return withStrongReasoning(projectDefault, providerModel ?? null);
+  }
+
+  return null;
 }
 
 export function buildLiveForkUpdatePrompt(input: {
