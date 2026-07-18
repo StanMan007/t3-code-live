@@ -73,10 +73,12 @@ describe("buildLiveForkUpdatePrompt", () => {
 
     expect(prompt).toContain("/Users/example/t3code");
     expect(prompt).toContain("0.0.29-nightly.1");
-    expect(prompt).toContain("Never reset, rebase, force-push");
-    expect(prompt).toContain("merge upstream/main");
+    expect(prompt).toContain("Never rebase, reset, force-push");
+    expect(prompt).toContain("branch is not `main`");
+    expect(prompt).toContain("git merge --no-edit upstream/main");
     expect(prompt).toContain("com.stanman.t3codelive");
-    expect(prompt).toContain("Use Computer Use");
+    expect(prompt).toContain('report "already current"');
+    expect(prompt).toContain("Do not test or build");
   });
 });
 
@@ -98,7 +100,7 @@ describe("resolveLiveForkUpdaterModelSelection", () => {
     };
   }
 
-  it("selects GPT-5.6-Sol with the strongest supported reasoning option", () => {
+  it("selects GPT-5.6-Sol with High reasoning", () => {
     const selection = resolveLiveForkUpdaterModelSelection({
       providers: [
         provider([
@@ -136,7 +138,7 @@ describe("resolveLiveForkUpdaterModelSelection", () => {
     expect(selection).toEqual({
       instanceId: "codex",
       model: "gpt-5.6-sol",
-      options: [{ id: "reasoningEffort", value: "xhigh" }],
+      options: [{ id: "reasoningEffort", value: "high" }],
     });
   });
 
@@ -150,6 +152,34 @@ describe("resolveLiveForkUpdaterModelSelection", () => {
               name: "GPT-5.4",
               isCustom: false,
               capabilities: null,
+            },
+          ]),
+        ],
+        projectDefaultModelSelection: null,
+      }),
+    ).toBeNull();
+  });
+
+  it("refuses to launch when GPT-5.6 cannot be pinned to High reasoning", () => {
+    expect(
+      resolveLiveForkUpdaterModelSelection({
+        providers: [
+          provider([
+            {
+              slug: "gpt-5.6-sol",
+              name: "GPT-5.6-Sol",
+              isCustom: false,
+              capabilities: {
+                optionDescriptors: [
+                  {
+                    id: "reasoningEffort",
+                    label: "Reasoning",
+                    type: "select",
+                    options: [{ id: "xhigh", label: "Extra High" }],
+                    currentValue: "xhigh",
+                  },
+                ],
+              },
             },
           ]),
         ],

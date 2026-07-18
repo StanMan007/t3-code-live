@@ -1,39 +1,38 @@
-name: Upstream compatibility
+name: Daily upstream check
 
 on:
   workflow_dispatch:
   schedule:
-    - cron: "17 13 * * 1"
+    - cron: "17 13 * * *"
 
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
 
 jobs:
-  open-sync-pr:
+  check-upstream:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Merge current upstream into a compatibility branch
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Check whether upstream has new commits
         run: |
           git remote add upstream https://github.com/pingdotgg/t3code.git
-          git fetch upstream main
-          if git merge-base --is-ancestor upstream/main HEAD; then
+          git fetch --prune upstream main
+          counts="$(git rev-list --left-right --count HEAD...upstream/main)"
+          local_ahead="$(printf '%s' "$counts" | awk '{print $1}')"
+          upstream_ahead="$(printf '%s' "$counts" | awk '{print $2}')"
+          {
+            echo "## T3 Code upstream check"
+            echo "- Fork SHA: $(git rev-parse HEAD)"
+            echo "- Upstream SHA: $(git rev-parse upstream/main)"
+            echo "- Fork-only commits: $local_ahead"
+            echo "- Incoming upstream commits: $upstream_ahead"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$upstream_ahead" -eq 0 ]; then
             echo "Fork already contains upstream/main."
             exit 0
           fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git switch -C automation/upstream-compatibility
-          git merge --no-edit upstream/main
-          git push --force-with-lease origin automation/upstream-compatibility
-          gh pr view automation/upstream-compatibility >/dev/null 2>&1 || \
-            gh pr create \
-              --base main \
-              --head automation/upstream-compatibility \
-              --title "chore: verify current upstream compatibility" \
-              --body "Automated merge of pingdotgg/t3code main. Review Live Thread seam files and require the normal check, typecheck, test, build, and UI proof gates before merging."
+          git log --oneline HEAD..upstream/main
+          echo "Upstream has $upstream_ahead new commit(s). Run the guarded in-app updater."
+          exit 1

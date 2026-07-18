@@ -10,7 +10,6 @@ import { createModelSelection } from "@t3tools/shared/model";
 const LIVE_FORK_OWNER = "stanman007";
 const LIVE_FORK_REPOSITORY = "t3-code-live";
 const PREFERRED_UPDATE_MODELS = ["gpt-5.6-sol", "gpt-5.6"] as const;
-const PREFERRED_REASONING_VALUES = ["xhigh", "max", "high"] as const;
 
 type ForkUpdateProvider = Pick<
   ServerProvider,
@@ -59,18 +58,18 @@ export function findLiveForkSourceProject(
   return ranked[0]?.project ?? null;
 }
 
-function withStrongReasoning(
+function withHighReasoning(
   selection: ModelSelection,
   providerModel: ForkUpdateProvider["models"][number] | null,
-): ModelSelection {
+): ModelSelection | null {
   const descriptors = providerModel?.capabilities?.optionDescriptors ?? [];
   const reasoningDescriptor = descriptors.find((descriptor) => descriptor.id === "reasoningEffort");
   const reasoningOptions =
     reasoningDescriptor?.type === "select" ? reasoningDescriptor.options : [];
-  const reasoningValue =
-    PREFERRED_REASONING_VALUES.find((candidate) =>
-      reasoningOptions.some((option) => option.id === candidate),
-    ) ?? "xhigh";
+  const reasoningValue = reasoningOptions.some((option) => option.id === "high") ? "high" : null;
+  if (reasoningValue === null) {
+    return null;
+  }
   const options: ProviderOptionSelection[] = [
     ...(selection.options?.filter((option) => option.id !== "reasoningEffort") ?? []),
     { id: "reasoningEffort", value: reasoningValue },
@@ -99,7 +98,13 @@ export function resolveLiveForkUpdaterModelSelection(input: {
         (candidate) => candidate.slug.toLowerCase() === preferredModel,
       );
       if (model) {
-        return withStrongReasoning(createModelSelection(provider.instanceId, model.slug), model);
+        const selection = withHighReasoning(
+          createModelSelection(provider.instanceId, model.slug),
+          model,
+        );
+        if (selection) {
+          return selection;
+        }
       }
     }
   }
@@ -109,7 +114,7 @@ export function resolveLiveForkUpdaterModelSelection(input: {
     const providerModel = input.providers
       .find((provider) => provider.instanceId === projectDefault.instanceId)
       ?.models.find((model) => model.slug === projectDefault.model);
-    return withStrongReasoning(projectDefault, providerModel ?? null);
+    return withHighReasoning(projectDefault, providerModel ?? null);
   }
 
   return null;
@@ -119,28 +124,28 @@ export function buildLiveForkUpdatePrompt(input: {
   readonly workspaceRoot: string;
   readonly installedVersion: string;
 }): string {
-  return `Update and verify my local T3 Code Live fork at ${input.workspaceRoot}.
+  return `Check and, only when necessary, update T3 Code Live at ${input.workspaceRoot}.
 
-This task was launched by the in-app one-click updater. The currently installed custom app reports version ${input.installedVersion}.
+Installed version: ${input.installedVersion}. Use the assigned GPT-5.6-Sol model on High reasoning.
 
-Required safety contract:
-- Read AGENTS.md and inspect the repository, branch, remotes, status, and recent history before changing anything.
-- Treat pingdotgg/t3code upstream/main as the upstream source and StanMan007/t3-code-live as the custom fork. Confirm those remotes from Git before relying on them.
-- Never reset, rebase, force-push, discard, overwrite, or automatically stash local work. If the working tree has unrelated or uncommitted user work, stop and explain exactly what must be resolved.
-- Do not create or switch branches or worktrees. Do not push, open a PR, publish a release, or replace the installed app unless I explicitly authorize that action in this task.
-- Preserve the Live Thread integration and this one-click updater as a thin additive layer. Do not copy an upstream app bundle over the custom app.
+Rules:
+- Read AGENTS.md. Work only in the current checkout and branch.
+- Never rebase, reset, force-push, discard, or automatically stash work.
+- Never push, open a PR, publish, or replace the installed app without explicit approval in this task.
+- Preserve Live Thread and this updater as an additive layer over upstream.
 
-Update workflow:
-1. Fetch origin and upstream with pruning, then report whether upstream/main is ahead and list the incoming commits.
-2. If already current, skip the merge and continue to verification. Otherwise merge upstream/main into the current branch with a normal merge commit; never rebase.
-3. Resolve only clear, narrow conflicts while preserving both upstream behavior and the additive Live Thread/updater seams. If a conflict requires product judgment, stop and ask.
-4. Run the repository's current formatter/check, typecheck, focused Live Thread/updater tests, and the relevant broader test suite. Fix regressions caused by the integration.
-5. Build the custom macOS arm64 DMG using the current repository build workflow with these custom identity values:
-   - app id: com.stanman.t3codelive
-   - product name: T3 Code Live (Nightly)
-   - signing identity: Apple Development: Jonathan Stanley (P8U8347VLY)
-6. Verify the built app name, version, architecture, code signature, DMG checksum, and that it launches without replacing the installed app.
-7. Use Computer Use to prove the updated UI, including Live Thread and Settings > About > Update T3 Code Live.
+Run this decision flow:
+1. Inspect: \`git status --short --branch\` and \`git log -5 --oneline\`. If the branch is not \`main\`, stop without changing anything.
+2. Run the shared read-only checker: \`./scripts/check-t3-code-live-upstream.sh\`. It fetches and reports both SHAs plus \`upstream_ahead\`.
+3. If \`upstream_ahead=0\`, report "already current" and stop. Do not test or build.
+4. If upstream is ahead and the worktree is not clean, stop without changing files and report the blocker.
+5. If upstream is ahead and the worktree is clean, run \`git merge --no-edit upstream/main\`. Never rebase. Preserve the custom seams. Resolve only obvious conflicts; otherwise run \`git merge --abort\` and report the conflicting files.
+6. After a successful merge, run:
+   - \`./node_modules/.bin/vp check\`
+   - \`./node_modules/.bin/vp run -r --concurrency-limit 2 typecheck\`
+   - the focused Live Thread and updater tests, followed by broader tests only when the changed surface warrants them.
+7. Only after those gates pass, build the arm64 DMG with app id \`com.stanman.t3codelive\`, product name \`T3 Code Live (Nightly)\`, and signing identity \`Apple Development: Jonathan Stanley (P8U8347VLY)\`.
+8. Verify the artifact signature, embedded commit SHA, architecture, and checksum. Use Computer Use for UI proof only after an actual merge/build.
 
-Finish with a concise evidence report: old and new upstream SHAs, merge result, preserved custom files, commands and results, artifact path and checksum, screenshot path, and whether the installed app still needs an explicitly approved replacement/restart.`;
+Finish with: comparison result, merge result, checks run, artifact evidence if built, and the one next action required from me.`;
 }
