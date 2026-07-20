@@ -1,12 +1,31 @@
 import type { LiveForkUpdateResult } from "@t3tools/contracts";
 
-export type ForkUpdatePillPhase = "idle" | "checking" | "merging" | "launching_agent";
+import {
+  LIVE_FORK_UPDATE_BLOCKED_MARKER,
+  LIVE_FORK_UPDATE_READY_MARKER,
+} from "../settings/forkSourceUpdate.logic";
+
+export { LIVE_FORK_UPDATE_BLOCKED_MARKER, LIVE_FORK_UPDATE_READY_MARKER };
+
+export type ForkRepairAgentLifecycle = "working" | "ready" | "review";
+
+export type ForkUpdatePillPhase =
+  | "idle"
+  | "checking"
+  | "merging"
+  | "launching_agent"
+  | "agent_working"
+  | "verifying_agent"
+  | "agent_review"
+  | "restart_ready"
+  | "rebuilding";
 
 export interface ForkUpdatePillView {
   readonly tone: "neutral" | "primary" | "warning" | "success";
   readonly title: string;
+  readonly trailingLabel?: string;
   readonly description: string;
-  readonly action: "check" | "merge" | "agent" | "none";
+  readonly action: "check" | "merge" | "agent" | "open_agent" | "rebuild" | "none";
   readonly busy: boolean;
   readonly dismissible: boolean;
 }
@@ -45,6 +64,56 @@ export function getForkUpdatePillView(
       dismissible: false,
     };
   }
+  if (phase === "agent_working") {
+    return {
+      tone: "warning",
+      title: "Agent updating source…",
+      description: "GPT-5.6-Sol is merging upstream and verifying the Live Thread integration.",
+      action: "none",
+      busy: true,
+      dismissible: false,
+    };
+  }
+  if (phase === "verifying_agent") {
+    return {
+      tone: "neutral",
+      title: "Verifying agent result…",
+      description: "Confirming that upstream/main is fully integrated before offering a restart.",
+      action: "none",
+      busy: true,
+      dismissible: false,
+    };
+  }
+  if (phase === "agent_review") {
+    return {
+      tone: "warning",
+      title: "Review agent result",
+      description: "The agent stopped without a verified ready-to-rebuild result.",
+      action: "open_agent",
+      busy: false,
+      dismissible: false,
+    };
+  }
+  if (phase === "restart_ready") {
+    return {
+      tone: "primary",
+      title: "Restart to apply update",
+      description: "Rebuild, replace, and relaunch the signed T3 Code Live Nightly app.",
+      action: "rebuild",
+      busy: false,
+      dismissible: false,
+    };
+  }
+  if (phase === "rebuilding") {
+    return {
+      tone: "primary",
+      title: "Rebuilding and restarting…",
+      description: "The app will stay open until the signed replacement is ready.",
+      action: "none",
+      busy: true,
+      dismissible: false,
+    };
+  }
   if (!result || result.status === "current") {
     return {
       tone: "neutral",
@@ -67,20 +136,29 @@ export function getForkUpdatePillView(
   }
   if (result.status === "merged") {
     return {
-      tone: "success",
-      title: "Source updated",
-      description: result.detail ?? "T3 Code Live now contains the latest upstream source.",
-      action: "none",
+      tone: "primary",
+      title: "Restart to apply update",
+      description: `${result.detail ?? "T3 Code Live now contains the latest upstream source."} Rebuild and relaunch the signed app.`,
+      action: "rebuild",
       busy: false,
-      dismissible: true,
+      dismissible: false,
     };
   }
   if (result.status === "needs_agent") {
+    const behindLabel =
+      result.upstreamAhead > 0
+        ? `${result.upstreamAhead} commit${result.upstreamAhead === 1 ? "" : "s"} behind upstream.`
+        : null;
     return {
       tone: "warning",
       title: "Spin up an agent",
-      description:
+      ...(behindLabel ? { trailingLabel: `${result.upstreamAhead} behind` } : {}),
+      description: [
+        behindLabel,
         result.detail ?? "The automatic merge needs GPT-5.6-Sol to preserve Live Thread.",
+      ]
+        .filter((value) => value !== null)
+        .join(" "),
       action: "agent",
       busy: false,
       dismissible: false,
@@ -89,9 +167,59 @@ export function getForkUpdatePillView(
   return {
     tone: "primary",
     title: "Update available",
+    trailingLabel: `${result.upstreamAhead} behind`,
     description: `${result.upstreamAhead} upstream commit${result.upstreamAhead === 1 ? " is" : "s are"} ready to merge into T3 Code Live.`,
     action: "merge",
     busy: false,
     dismissible: true,
   };
+}
+
+export function resolveForkRepairAgentLifecycle(input: {
+  readonly latestTurnState: "running" | "interrupted" | "completed" | "error" | null;
+  readonly sessionStatus:
+    | "idle"
+    | "starting"
+    | "running"
+    | "ready"
+    | "interrupted"
+    | "stopped"
+    | "error"
+    | null;
+  readonly assistantMessages: ReadonlyArray<{
+    readonly text: string;
+    readonly streaming: boolean;
+  }>;
+}): ForkRepairAgentLifecycle {
+  if (
+    input.latestTurnState === "running" ||
+    input.sessionStatus === "starting" ||
+    input.sessionStatus === "running"
+  ) {
+    return "working";
+  }
+
+  const finalAssistantMessage = input.assistantMessages.findLast(
+    (message) => !message.streaming && message.text.trim().length > 0,
+  );
+  if (
+    input.latestTurnState === "completed" &&
+    finalAssistantMessage?.text.includes(LIVE_FORK_UPDATE_READY_MARKER) === true
+  ) {
+    return "ready";
+  }
+
+  if (
+    input.latestTurnState === "completed" ||
+    input.latestTurnState === "interrupted" ||
+    input.latestTurnState === "error" ||
+    input.sessionStatus === "interrupted" ||
+    input.sessionStatus === "stopped" ||
+    input.sessionStatus === "error" ||
+    finalAssistantMessage?.text.includes(LIVE_FORK_UPDATE_BLOCKED_MARKER) === true
+  ) {
+    return "review";
+  }
+
+  return "working";
 }

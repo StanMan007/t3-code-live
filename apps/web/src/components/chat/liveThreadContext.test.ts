@@ -32,6 +32,9 @@ describe("liveThreadContext", () => {
     expect(prompt).toContain("Latest request with the exact acceptance criteria");
     expect(prompt).toContain("Latest verified result");
     expect(prompt).toContain("read_task_context");
+    expect(prompt).toContain("Default to one short sentence");
+    expect(prompt).toContain("Never use a preamble");
+    expect(prompt).toContain("Ask at most one question");
   });
 
   it("pages through full task history without dropping text", () => {

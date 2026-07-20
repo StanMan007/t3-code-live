@@ -7,6 +7,7 @@ import {
 } from "@t3tools/contracts";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
 import * as ChildProcess from "effect/unstable/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
 
@@ -16,6 +17,7 @@ const EXPECTED_UPSTREAM_URL = "https://github.com/pingdotgg/t3code.git";
 const PRODUCT_NAME = "T3 Code Live (Nightly)";
 const APP_ID = "com.stanman.t3codelive";
 const SIGNING_IDENTITY = "Apple Development: Jonathan Stanley (P8U8347VLY)";
+const isLiveForkRebuildError = Schema.is(LiveForkRebuildError);
 
 export const REBUILD_SCRIPT = String.raw`set -euo pipefail
 
@@ -23,6 +25,8 @@ repo="$1"
 log_path="$2"
 log_dir="${"$"}{log_path%/*}"
 lock_dir="${"$"}{TMPDIR:-/tmp}/t3-code-live-rebuild.lock"
+lock_pid_path="$lock_dir/pid"
+lock_owned=0
 mount_dir=""
 stage_app=""
 backup_app=""
@@ -33,13 +37,43 @@ mkdir -p "$log_dir"
 exec >>"$log_path" 2>&1
 printf '\n[%s] Starting T3 Code Live rebuild from %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$repo"
 
-if ! mkdir "$lock_dir" 2>/dev/null; then
-  printf 'A T3 Code Live rebuild is already running.\n'
-  exit 75
-fi
+acquire_lock() {
+  if mkdir "$lock_dir" 2>/dev/null; then
+    printf '%s\n' "$$" >"$lock_pid_path"
+    lock_owned=1
+    return
+  fi
+
+  existing_pid="$(cat "$lock_pid_path" 2>/dev/null || true)"
+  if [ -n "$existing_pid" ] && kill -0 "$existing_pid" 2>/dev/null; then
+    existing_command="$(ps -p "$existing_pid" -o command= 2>/dev/null || true)"
+    if printf '%s' "$existing_command" | grep -Fq 't3-code-live-rebuild'; then
+      printf 'A T3 Code Live rebuild is already running.\n'
+      exit 75
+    fi
+  fi
+
+  stale_lock="${"$"}{lock_dir}.stale.$$"
+  if ! mv "$lock_dir" "$stale_lock" 2>/dev/null; then
+    printf 'Another T3 Code Live rebuild acquired the lock.\n'
+    exit 75
+  fi
+  rm -f "$stale_lock/pid"
+  rmdir "$stale_lock" 2>/dev/null || true
+  printf 'Recovered an abandoned T3 Code Live rebuild lock.\n'
+
+  if ! mkdir "$lock_dir" 2>/dev/null; then
+    printf 'Another T3 Code Live rebuild acquired the lock.\n'
+    exit 75
+  fi
+  printf '%s\n' "$$" >"$lock_pid_path"
+  lock_owned=1
+}
+
+acquire_lock
 
 cleanup() {
-  status=$?
+  exit_status=$?
   if [ -n "$mount_dir" ] && mount | grep -Fq " on $mount_dir "; then
     hdiutil detach "$mount_dir" -quiet || true
   fi
@@ -50,17 +84,21 @@ cleanup() {
   if [ -n "$stage_app" ] && [ -d "$stage_app" ]; then
     mv "$stage_app" "${"$"}{TMPDIR:-/tmp}/T3 Code Live failed-stage-$$.app" || true
   fi
-  rmdir "$lock_dir" 2>/dev/null || true
-  if [ "$status" -ne 0 ]; then
-    printf '[%s] Rebuild failed with status %s. The running app was left unchanged.\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$status"
+  if [ "$lock_owned" -eq 1 ] && [ "$(cat "$lock_pid_path" 2>/dev/null || true)" = "$$" ]; then
+    rm -f "$lock_pid_path"
+    rmdir "$lock_dir" 2>/dev/null || true
   fi
-  exit "$status"
+  if [ "$exit_status" -ne 0 ]; then
+    printf '[%s] Rebuild failed with status %s. The running app was left unchanged.\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$exit_status"
+  fi
+  exit "$exit_status"
 }
 trap cleanup EXIT INT TERM
 
 cd "$repo"
 T3CODE_DESKTOP_APP_ID='com.stanman.t3codelive' \
 T3CODE_DESKTOP_PRODUCT_NAME='T3 Code Live (Nightly)' \
+T3CODE_DESKTOP_ASSET_BRAND='nightly' \
 T3CODE_DESKTOP_LOCAL_SIGN_IDENTITY='Apple Development: Jonathan Stanley (P8U8347VLY)' \
   ./node_modules/.bin/vp run dist:desktop:dmg:arm64
 
@@ -150,12 +188,27 @@ export const start = Effect.fn("LiveForkRebuilder.start")(function* (
     },
   );
 
-  yield* spawner.spawn(command).pipe(
-    Effect.flatMap((handle) => handle.unref),
-    Effect.asVoid,
-    Effect.scoped,
+  yield* Effect.scoped(
+    Effect.gen(function* () {
+      const handle = yield* spawner.spawn(command);
+      yield* Effect.sleep("750 millis");
+      if (!(yield* handle.isRunning)) {
+        const exitCode = yield* handle.exitCode;
+        if (Number(exitCode) === 75) {
+          return;
+        }
+        return yield* rebuildError(
+          cwd,
+          `The rebuild process exited before startup verification (status ${exitCode}).`,
+        );
+      }
+      yield* handle.unref.pipe(Effect.asVoid);
+    }),
+  ).pipe(
     Effect.mapError((cause) =>
-      rebuildError(cwd, "The rebuild process could not be started.", cause),
+      isLiveForkRebuildError(cause)
+        ? cause
+        : rebuildError(cwd, "The rebuild process could not be started.", cause),
     ),
   );
 

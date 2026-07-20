@@ -10,6 +10,8 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   buildLiveForkMergeRepairPrompt,
   findLiveForkSourceProject,
+  LIVE_FORK_UPDATE_BLOCKED_MARKER,
+  LIVE_FORK_UPDATE_READY_MARKER,
   resolveLiveForkUpdaterModelSelection,
 } from "./forkSourceUpdate.logic";
 
@@ -83,11 +85,42 @@ describe("buildLiveForkMergeRepairPrompt", () => {
 
     expect(prompt).toContain("/Users/example/t3code");
     expect(prompt).toContain("0.0.29-nightly.1");
-    expect(prompt).toContain("Never rebase, reset, force-push");
+    expect(prompt).toContain("never rebase, reset, force-push");
     expect(prompt).toContain("ChatComposer.tsx");
-    expect(prompt).toContain("Live Thread real-time agent");
+    expect(prompt).toContain("Live Thread, its real-time agent/right-panel integration");
+    expect(prompt).toContain("Upstream T3 Code is the source of truth");
+    expect(prompt).toContain("Do not assume there is a merge conflict");
+    expect(prompt).toContain("Retain upstream's current implementation");
     expect(prompt).toContain("finish the merge commit");
     expect(prompt).toContain("Never push, open a PR, publish, build, install");
+    expect(prompt).toContain("use the T3 Code Live power button once");
+    expect(prompt).toContain(LIVE_FORK_UPDATE_READY_MARKER);
+    expect(prompt).toContain(LIVE_FORK_UPDATE_BLOCKED_MARKER);
+    expect(prompt).toContain("Never emit the ready marker for a partial");
+  });
+
+  it("does not mislabel a dirty worktree as a merge conflict", () => {
+    const prompt = buildLiveForkMergeRepairPrompt({
+      workspaceRoot: "/Users/example/t3code",
+      installedVersion: "0.0.28",
+      updateResult: {
+        status: "needs_agent",
+        branch: "main",
+        currentSha: "abc123",
+        upstreamSha: "def456",
+        localAhead: 5,
+        upstreamAhead: 18,
+        conflictingFiles: [],
+        detail:
+          "The fork has local changes. An agent should preserve them before merging upstream.",
+      },
+    });
+
+    expect(prompt).toContain("uncommitted local fork changes; no merge has started");
+    expect(prompt).toContain("None reported. Do not assume that a merge is active.");
+    expect(prompt).toContain("cohesive, verified set of Live Thread/updater changes");
+    expect(prompt).toContain("merge `upstream/main` normally");
+    expect(prompt).not.toContain("Resolve the existing upstream merge conflicts");
   });
 });
 

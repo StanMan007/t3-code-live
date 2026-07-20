@@ -88,6 +88,8 @@ interface DesktopBuildIconAssets {
   readonly windowsIconIco: string;
 }
 
+type DesktopAssetBrand = "nightly" | "production";
+
 interface PlatformConfig {
   readonly cliFlag: "--mac" | "--linux" | "--win";
   readonly defaultTarget: string;
@@ -1330,12 +1332,27 @@ export function resolveDesktopUpdateChannel(version: string): "latest" | "nightl
   return /-nightly\.\d{8}\.\d+$/.test(version) ? "nightly" : "latest";
 }
 
-export function resolveDesktopWebAssetBrand(version: string): WebAssetBrand {
-  return resolveWebAssetBrandForChannel(resolveDesktopUpdateChannel(version));
+export function resolveDesktopAssetBrand(
+  version: string,
+  env: NodeJS.ProcessEnv = process.env,
+): DesktopAssetBrand {
+  const override = env.T3CODE_DESKTOP_ASSET_BRAND?.trim();
+  if (override === "nightly" || override === "production") return override;
+  return resolveWebAssetBrandForChannel(resolveDesktopUpdateChannel(version)) as DesktopAssetBrand;
 }
 
-export function resolveDesktopBuildIconAssets(version: string): DesktopBuildIconAssets {
-  if (resolveDesktopUpdateChannel(version) === "nightly") {
+export function resolveDesktopWebAssetBrand(
+  version: string,
+  env: NodeJS.ProcessEnv = process.env,
+): WebAssetBrand {
+  return resolveDesktopAssetBrand(version, env);
+}
+
+export function resolveDesktopBuildIconAssets(
+  version: string,
+  env: NodeJS.ProcessEnv = process.env,
+): DesktopBuildIconAssets {
+  if (resolveDesktopAssetBrand(version, env) === "nightly") {
     return {
       macIconPng: BRAND_ASSET_PATHS.nightlyMacIconPng,
       linuxIconPng: BRAND_ASSET_PATHS.nightlyLinuxIconPng,

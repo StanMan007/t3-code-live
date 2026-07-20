@@ -28,6 +28,7 @@ import {
   resolveFffNativeDependencies,
   resolveBuildOptions,
   resolveDesktopBuildIconAssets,
+  resolveDesktopAssetBrand,
   resolveDesktopAppId,
   resolveDesktopProductName,
   resolveMacLocalSigningIdentity,
@@ -132,6 +133,19 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
   it("switches the bundled splash and favicon branding for nightly versions", () => {
     assert.equal(resolveDesktopWebAssetBrand("0.0.17"), "production");
     assert.equal(resolveDesktopWebAssetBrand("0.0.17-nightly.20260413.42"), "nightly");
+  });
+
+  it("can use Nightly artwork for a stable-version fork without changing its update channel", () => {
+    const liveForkEnv = { T3CODE_DESKTOP_ASSET_BRAND: "nightly" };
+
+    assert.equal(resolveDesktopUpdateChannel("0.0.28"), "latest");
+    assert.equal(resolveDesktopAssetBrand("0.0.28", liveForkEnv), "nightly");
+    assert.deepStrictEqual(resolveDesktopBuildIconAssets("0.0.28", liveForkEnv), {
+      macIconPng: BRAND_ASSET_PATHS.nightlyMacIconPng,
+      linuxIconPng: BRAND_ASSET_PATHS.nightlyLinuxIconPng,
+      windowsIconIco: BRAND_ASSET_PATHS.nightlyWindowsIconIco,
+    });
+    assert.equal(resolveDesktopWebAssetBrand("0.0.28", liveForkEnv), "nightly");
   });
 
   it.effect("resolves GitHub desktop publish config from Effect config", () =>

@@ -1,0 +1,230 @@
+{
+    "history": [
+        {
+            "breakpoints": [],
+            "visible": true,
+            "locked": false,
+            "aspectRatio": 1.6,
+            "layerName": "",
+            "userDownsample": 1,
+            "isElement": true,
+            "opacity": 1,
+            "effects": [
+                "d283fafa-a207-4a9f-9830-53871f614447",
+                "afe6a24d-a9f2-47a2-a395-63fa7e2d06ac",
+                "aba6e34d-78a8-43b4-9be7-d55af33b59ed"
+            ],
+            "displace": 0,
+            "trackMouse": 0,
+            "anchorPoint": "topLeft",
+            "mouseMomentum": 0,
+            "blendMode": "NORMAL",
+            "bgDisplace": 0,
+            "mask": 0,
+            "maskBackground": {
+                "type": "Vec3",
+                "_x": 0,
+                "_y": 0,
+                "_z": 0
+            },
+            "maskAlpha": 0,
+            "maskDepth": 0,
+            "dispersion": 0,
+            "axisTilt": 0,
+            "states": {
+                "appear": [],
+                "scroll": [],
+                "hover": []
+            },
+            "layerType": "shape",
+            "width": 200,
+            "widthMode": "fixed",
+            "height": 200,
+            "heightMode": "fixed",
+            "left": 0.1252222222222222,
+            "leftMode": "relative",
+            "top": 0.12616666666666668,
+            "topMode": "relative",
+            "rotation": 0,
+            "trackAxes": "xy",
+            "pos": {
+                "type": "Vec2",
+                "_x": 0.5,
+                "_y": 0.5
+            },
+            "borderRadius": 0,
+            "gradientAngle": 0,
+            "strokeWidth": 0,
+            "coords": [
+                [
+                    0,
+                    0
+                ],
+                [
+                    200,
+                    0
+                ],
+                [
+                    200,
+                    200
+                ],
+                [
+                    0,
+                    200
+                ]
+            ],
+            "fill": [
+                "#000000"
+            ],
+            "fitToCanvas": 1,
+            "gradientType": "linear",
+            "type": "rectangle",
+            "stroke": [
+                "#000000"
+            ],
+            "numSides": 3,
+            "compiledFragmentShaders": [
+                "#version 300 es\nprecision highp float; in vec2 vTextureCoord; in vec3 vVertexPosition;uniform vec2 uMousePos; uniform sampler2D uBgTexture; uniform sampler2D uTexture; uniform int uSampleBg;const float STEPS = 24.0; const float PI = 3.1415926;out vec4 fragColor;vec4 getNormalOutput(vec4 color, vec4 background) { color = mix(background, color + background * (1.0 - color.a), 1.0000); return color; }vec4 getOutputByMode(vec4 color, vec4 background) { return getNormalOutput(color, background); }void main() { vec2 uv = vTextureCoord; vec2 pos = mix(vec2(0), (uMousePos - 0.5), 0.0000);uv -= pos;vec4 background = vec4(0); if(uSampleBg == 1) { background = texture(uBgTexture, vTextureCoord); } vec4 color = texture(uTexture, uv);vec4 col = getOutputByMode(color, background);fragColor = col; }"
+            ],
+            "compiledVertexShaders": [
+                "#version 300 es\nprecision highp float;in vec3 aVertexPosition; in vec2 aTextureCoord;uniform mat4 uMVMatrix; uniform mat4 uPMatrix; uniform mat4 uTextureMatrix; uniform vec2 uMousePos;out vec2 vTextureCoord; out vec3 vVertexPosition;void main() { float angleX = uMousePos.y * 0.5 - 0.25; float angleY = (1.-uMousePos.x) * 0.5 - 0.25;mat4 rotateX = mat4(1.0, 0.0, 0.0, 0.0, 0.0, cos(angleX), -sin(angleX), 0.0, 0.0, sin(angleX), cos(angleX), 0.0, 0.0, 0.0, 0.0, 1.0); mat4 rotateY = mat4(cos(angleY), 0.0, sin(angleY), 0.0, 0.0, 1.0, 0.0, 0.0, -sin(angleY), 0.0, cos(angleY), 0.0, 0.0, 0.0, 0.0, 1.0);mat4 rotationMatrix = rotateX * rotateY; gl_Position = uPMatrix * uMVMatrix * vec4(aVertexPosition, 1.0); vVertexPosition = (rotationMatrix * vec4(aVertexPosition, 1.0)).xyz; vTextureCoord = (uTextureMatrix * vec4(aTextureCoord, 0.0, 1.0)).xy; }"
+            ],
+            "data": {
+                "uniforms": {}
+            },
+            "id": "shape"
+        },
+        {
+            "breakpoints": [],
+            "visible": true,
+            "aspectRatio": 1,
+            "userDownsample": 1,
+            "layerType": "effect",
+            "type": "noiseFill",
+            "usesPingPong": false,
+            "speed": 0.25,
+            "trackMouse": 0,
+            "trackAxes": "xy",
+            "mouseMomentum": 1,
+            "texture": false,
+            "parentLayer": "d283fafa-a207-4a9f-9830-53871f614447",
+            "animating": true,
+            "isMask": 0,
+            "compiledFragmentShaders": [
+                "#version 300 es\nprecision highp float; in vec2 vTextureCoord; in vec3 vVertexPosition;uniform sampler2D uTexture; uniform float uTime; uniform vec2 uMousePos; uniform vec2 uResolution; uvec2 pcg2d(uvec2 v) { v = v * 1664525u + 1013904223u; v.x += v.y * v.y * 1664525u + 1013904223u; v.y += v.x * v.x * 1664525u + 1013904223u; v ^= v >> 16; v.x += v.y * v.y * 1664525u + 1013904223u; v.y += v.x * v.x * 1664525u + 1013904223u; return v; }float randFibo(vec2 p) { uvec2 v = floatBitsToUint(p); v = pcg2d(v); uint r = v.x ^ v.y; return float(r) / float(0xffffffffu); }out vec4 fragColor;const float PI = 3.14159265359; const float TAU = 6.28318530718;vec3 anchoredPal(float t, vec3 col1, vec3 col2) { vec3 mid = 0.5 * (col1 + col2); vec3 axisAmp = 0.5 * (col2 - col1);vec3 base = mid + axisAmp * cos(TAU * t);vec3 axis = length(axisAmp) > 0.0001 ? normalize(axisAmp) : vec3(1.0, 0.0, 0.0); vec3 ref = abs(axis.x) > 0.9 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0); vec3 tangent1 = normalize(cross(axis, ref)); vec3 tangent2 = normalize(cross(axis, tangent1));float richness = 0.24 * length(axisAmp) + 0.02; vec3 ripple = tangent1 * sin(TAU * (t * 2.0 + 0.123)) + tangent2 * sin(TAU * (t * 3.0 + 0.437));vec3 col = base + (richness * 1.0000) * ripple; col = 1./(1. + exp(-col * 4. + 0.25) * 7.5); return col; }mat2 rot(float a) { return mat2(cos(a),-sin(a),sin(a),cos(a)); }vec3 hash3(vec2 p) { vec3 q = vec3(dot(p,vec2(127.1,311.7)), dot(p,vec2(269.5,183.3)), dot(p,vec2(419.2,371.9))); return fract(sin(q)*43758.5453); }float voronoise(vec2 uv) { float u = 1.; float v = 1.; vec2 drift = vec2(0, 0.0000 * uTime * 0.008); vec2 skew = vec2(0.5000, 1.0 - 0.5000);vec2 x = (uv * skew * 2.) - drift * mix(1., 14., 0.4700) * 2.; vec2 p = floor(x); vec2 f = fract(x); float k = 1.0 + 63.0 * pow(1.0-v,4.0); float va = 0.0; float wt = 0.0; for( int j=-2; j<=2; j++ ) for( int i=-2; i<=2; i++ ) { vec2 g = vec2( float(i),float(j) ); vec3 o = hash3( p + g ) * vec3(u,u,1.0); o.xy += 0.5 * vec2( sin(uTime * 0.1 + 0.0000 + o.x * 6.28), cos(uTime * 0.1 + 0.0000 + o.y * 6.28) ); vec2 r = g - f + o.xy; float d = dot(r,r); float ww = pow( 1.0-smoothstep(0.0,1.414,sqrt(d)), k ); va += o.z*ww; wt += ww; } return va/wt; } float getVoronoiNoise(vec2 uv) { float turb = 0.4800 * 2.5; float noise = voronoise(uv); return mix(0.5, noise, turb); }float getNoise(vec2 uv) { return getVoronoiNoise(uv); }void main() { vec2 uv = vTextureCoord; float aspectRatio = uResolution.x/uResolution.y; vec2 aspect = vec2(aspectRatio, 1.0);vec2 mPos = vec2(0.5, 0.5) + mix(vec2(0), (uMousePos-0.5), 0.0000);vec2 pos = mix(vec2(0.5, 0.5), mPos, 0.0000); float scale = mix(1., 14., 0.4700); vec2 drift = vec2(0, 0.0000 * uTime * 0.0125); mat2 rotation = rot(0.0270 * 2. * PI);vec2 st = (uv - pos) * aspect * scale * rotation; float noise = getNoise(st);if (0.0000 > 0.0) { vec2 toMouse = (uv - uMousePos) * aspect; float r = length(toMouse); float radius = mix(0.1, 1., 0.5000); float falloff = 1.0 - smoothstep(0.0, radius, r); vec2 dir = toMouse / max(r, 1e-5); vec2 uvBulgeOffsetAspect = -dir * (0.0000 * radius) * falloff * falloff; vec2 offset = uvBulgeOffsetAspect / aspect * r * 5.;st = (uv - pos + offset * noise) * aspect * scale * rotation; noise = getNoise(st); }vec4 color = texture(uTexture, uv); vec4 bg = color; float shift = 0.7600 + (0.0000 * uTime * 0.01); vec3 noiseColor = anchoredPal(noise + shift, vec3(1, 0.5176470588235295, 0.5019607843137255), vec3(0.6470588235294118, 0.47843137254901963, 1)); color.rgb = noiseColor.rgb;float dither = (randFibo(gl_FragCoord.xy) - 0.5) / 255.0; color.rgb += dither * 0.5;color.rgb = mix(bg.rgb, color.rgb, 1.0000); color.a = max(bg.a, 1.0000); fragColor = color;}"
+            ],
+            "compiledVertexShaders": [
+                "#version 300 es\nprecision mediump float;in vec3 aVertexPosition; in vec2 aTextureCoord;uniform mat4 uMVMatrix; uniform mat4 uPMatrix; uniform mat4 uTextureMatrix;out vec2 vTextureCoord; out vec3 vVertexPosition;void main() { gl_Position = uPMatrix * uMVMatrix * vec4(aVertexPosition, 1.0); vTextureCoord = (uTextureMatrix * vec4(aTextureCoord, 0.0, 1.0)).xy; }"
+            ],
+            "data": {
+                "depth": false,
+                "uniforms": {},
+                "isBackground": false
+            },
+            "id": "effect"
+        },
+        {
+            "breakpoints": [],
+            "visible": true,
+            "aspectRatio": 1,
+            "userDownsample": 1,
+            "layerType": "effect",
+            "type": "sdf_shape",
+            "usesPingPong": false,
+            "texture": false,
+            "scale": 0.176,
+            "speed": 0.5,
+            "trackMouseMove": 0,
+            "trackAxes": "xy",
+            "mouseMomentum": 0,
+            "trackMouse": 0,
+            "parentLayer": "aba6e34d-78a8-43b4-9be7-d55af33b59ed",
+            "animating": true,
+            "isMask": 0,
+            "states": {
+                "appear": [
+                    {
+                        "local": {
+                            "pendingChanges": {},
+                            "changeDebouncer": null,
+                            "dragSession": null
+                        },
+                        "type": "appear",
+                        "id": "6198e8a8-2754-4b16-bef9-8a44eed49574",
+                        "prop": "scale",
+                        "transition": {
+                            "delay": 1050,
+                            "ease": "easeOutBack",
+                            "duration": 400
+                        },
+                        "complete": false,
+                        "progress": 0,
+                        "value": 0,
+                        "endValue": 0.21,
+                        "initialized": false,
+                        "breakpoints": [],
+                        "loop": "none",
+                        "loopDelay": 0,
+                        "uniformData": {
+                            "type": "1f",
+                            "name": "uScale"
+                        }
+                    }
+                ],
+                "scroll": [],
+                "hover": []
+            },
+            "compiledFragmentShaders": [
+                "#version 300 es\nprecision highp float; precision highp int;in vec2 vTextureCoord; uniform sampler2D uTexture;uniform float uScale; uniform float uTime;uniform vec2 uMousePos; uniform vec2 uResolution;uvec2 pcg2d(uvec2 v) { v = v * 1664525u + 1013904223u; v.x += v.y * v.y * 1664525u + 1013904223u; v.y += v.x * v.x * 1664525u + 1013904223u; v ^= v >> 16; v.x += v.y * v.y * 1664525u + 1013904223u; v.y += v.x * v.x * 1664525u + 1013904223u; return v; }float randFibo(vec2 p) { uvec2 v = floatBitsToUint(p); v = pcg2d(v); uint r = v.x ^ v.y; return float(r) / float(0xffffffffu); }const float PI = 3.141592653; const float PI2 = 6.283185306; const int DISP_STEPS = 12; const vec3 viewDir = vec3(0,0, -4.25);ivec2 customTexSize; float customTexAspect;const mat3 ROT_Y_90 = mat3( 0.0, 0.0, 1.0, 0.0, 1.0, 0.0, -1.0, 0.0, 0.0 );const mat3 ROT_Z_90 = mat3( 0.0, -1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0 );const mat3 ROT_X_90 = mat3( 1.0, 0.0, 0.0, 0.0, 0.0, -1.0, 0.0, 1.0, 0.0 );mat3 rotY(float ang) { float c = cos(ang), s = sin(ang); return mat3(c, 0.0, s, 0.0, 1.0, 0.0, -s, 0.0, c); }mat3 rotX(float ang) { float c = cos(ang), s = sin(ang); return mat3(1.0, 0.0, 0.0, 0.0, c, -s, 0.0, s, c); }mat3 rotZ(float ang) { float c = cos(ang), s = sin(ang); return mat3(c, -s, 0.0, s, c, 0.0, 0.0, 0.0, 1.0); }vec3 twistY(vec3 p, float amount) { float c = cos(amount * p.y); float s = sin(amount * p.y); mat2 m = mat2(c, -s, s, c); return vec3(m * p.xz, p.y); }vec3 twistX(vec3 p, float amount) { float c = cos(amount * p.x); float s = sin(amount * p.x); mat2 m = mat2(c, -s, s, c); return vec3(p.x, m * p.yz); }float sphere(vec3 p, float r) { return length(p) - r; }float sdStar5(vec2 p, float r, float rf) { const vec2 k1 = vec2(0.809016994375, -0.587785252292); const vec2 k2 = vec2(-k1.x,k1.y); p.x = abs(p.x); p -= 2.0*max(dot(k1,p),0.0)*k1; p -= 2.0*max(dot(k2,p),0.0)*k2; p.x = abs(p.x); p.y -= r; vec2 ba = rf*vec2(-k1.y,k1.x) - vec2(0,1); float h = clamp( dot(p,ba)/dot(ba,ba), 0.0, r ); return length(p-ba*h) * sign(p.y*ba.x-p.x*ba.y); }vec3 getRepeat(vec3 p) { float spacing = (0.5000 + 0.0000 * 0.38) * 8.; return p; }vec3 getThreeDRepeat(vec3 p) { float spacing = (0.5000 + 0.0000 * 0.38) * 8.; return p; }vec3 getAdjustedP(vec3 p) { float scale = max(uScale, 0.000000001); float scaleFactor = 1.0/scale; vec3 adjustedP = p * scaleFactor;vec2 twist = vec2(0, 0);adjustedP.xy *= vec2(uResolution.x / uResolution.y, 1);adjustedP *= (1. + (0.0000 + 0.01));vec2 mousePos = mix(vec2(0), uMousePos - 0.5, 0.0000); vec2 axis = vec2(-1. * vec3(0.45206784024130214, 0.48178272401060895, 0.4887).y - 1. + mousePos.y/PI, vec3(0.45206784024130214, 0.48178272401060895, 0.4887).x + mousePos.x/PI) * 2.;adjustedP = getRepeat(adjustedP);float baseTime = uTime * 0.02; float timeX = vec3(0, 1, 0).x * baseTime; float timeY = vec3(0, 1, 0).y * baseTime; float timeZ = vec3(0, 1, 0).z * baseTime;mat3 rotYMat = rotY(axis.y * PI); mat3 rotXMat = rotX(axis.x * PI); mat3 rotZMat = rotZ(vec3(0.45206784024130214, 0.48178272401060895, 0.4887).z * 2.0 * PI);mat3 combinedRotation = rotZMat * rotYMat * rotXMat; mat3 combinedAnimation = rotZ(timeZ) * rotX(timeX) * rotY(timeY);adjustedP = combinedRotation * adjustedP; adjustedP = combinedAnimation * adjustedP; adjustedP = getThreeDRepeat(adjustedP); adjustedP = mix(adjustedP, twistY(adjustedP, -1.0 * twist.y), step(0.0, abs(twist.y))); adjustedP = mix(adjustedP, twistX(adjustedP, -1.0 * twist.x), step(0.0, abs(twist.x)));return adjustedP; }float getMergedSDF(vec3 p) { p = getAdjustedP(p); return sphere(p, 1.0); }float fresnel(vec3 eyeVector, vec3 worldNormal, float power) { float NdotV = abs(dot(eyeVector, worldNormal)); float width = fwidth(dot(eyeVector, worldNormal)); float threshold = 0.2; float edgeDampFactor = smoothstep(threshold, -threshold, width); float fresnelFactor = 1.0 - NdotV; return pow(fresnelFactor, power) * mix(1., edgeDampFactor * 2., 0.5); }vec3 noFrostOrDispersion(vec3 rd, vec3 normal) { float ior = 1.0 / (1.0 + 0.1100 * 0.25); vec3 refractedRay = refract(rd, normal, ior); return texture(uTexture, vTextureCoord - refractedRay.xy).rgb; }vec3 calculateNormal(vec3 p, float eps) { vec2 e = vec2(1.0, -1.0) * eps * 0.5; return normalize( e.xyy * getMergedSDF(p + e.xyy) + e.yyx * getMergedSDF(p + e.yyx) + e.yxy * getMergedSDF(p + e.yxy) + e.xxx * getMergedSDF(p + e.xxx) ); }vec3 sampleTexture(vec3 rd, vec3 normal) { return noFrostOrDispersion(rd, normal); }float scene(vec3 p) { return max(0.0000000001, getMergedSDF(p) - (0.0000 + 0.005)) * max(uScale, 0.000000001); }const int STEPS = 128; const float MAX_DISTANCE = 100.0;vec4 rayMarch(vec3 ro, vec3 rd) { float pixelSize = 0.0025; float traveled = 0.; vec3 entryPoint = vec3(0.0); vec3 entryNormal = vec3(0.0); float partialAlpha = 0.0; float lastDistance = 0.0; float smoothing = mix(1., 4., 0.2000);for (int i = 0; i < STEPS; ++i) { vec3 currentPos = ro + rd * traveled; float distance = scene(currentPos); float progress = float(i)/float(STEPS); float step = distance * mix(1., 1.5, progress);if (distance > MAX_DISTANCE) break;if (distance < pixelSize) { partialAlpha = 1.; entryPoint = currentPos; entryNormal = calculateNormal(entryPoint, pixelSize * smoothing); break; }lastDistance = distance;traveled += max(step, pixelSize); if (traveled > MAX_DISTANCE) break; }if (partialAlpha == 0.0) { return vec4(0); }vec3 samplePosition = mix(rd, entryPoint, 0.0000);vec3 refractionColor = texture(uTexture, vTextureCoord).rgb;refractionColor = sampleTexture(samplePosition, entryNormal); vec3 lightDir = vec3(((vec2(vec3(-0.8, 0.25, -3).x, 1.-vec3(-0.8, 0.25, -3).y) - 0.333) * 3.) - vec2(0.4470762476814534, 0.5163287800255401), vec3(-0.8, 0.25, -3).z); vec3 normLightDir = normalize(lightDir);float lightAndShadow = dot(entryNormal, normLightDir); vec3 lightColor = mix(vec3(1), vec3(1, 1, 1), 1. - 0.0000); vec3 fresnelEffect = vec3(0.0);fresnelEffect = fresnel(rd, entryNormal, 8.0) * 1.0000 * vec3(1, 1, 1);vec3 specularEffect = vec3(0.0);vec3 halfwayDir = normalize(lightDir + rd); float specFactor = pow(max(dot(entryNormal, halfwayDir), 0.0), 64.0 * 0.3900 + 0.01); specularEffect = specFactor * 0.3900 * lightColor;vec3 combinedEffects = fresnelEffect + specularEffect; vec3 finalColor = mix(refractionColor, vec3(1, 1, 1) * lightAndShadow, 0.0000); finalColor += combinedEffects;vec4 outputColor = vec4(finalColor, 1.);return outputColor; }out vec4 fragColor;void main() { vec4 col = vec4(0); vec4 bg = texture(uTexture, vTextureCoord);if(uScale <= 0.0001 || 1.0000 <= 0.0001) { col = vec4(0); if(0 == 1) { col = bg; } fragColor = col; return; }vec2 pos = vec2(0.4470762476814534, 0.5163287800255401) + mix(vec2(0), (uMousePos-0.5), 0.0000); vec2 uv = vTextureCoord - pos; float fovFactor = tan(radians(20.) * 0.5); vec3 rd = vec3(uv * fovFactor, 0.5); col = rayMarch(viewDir, rd); float dither = (randFibo(vTextureCoord.xy) - 0.5) / 255.0; col += dither;col = mix(vec4(0), col, 1.0000); fragColor = col;}"
+            ],
+            "compiledVertexShaders": [
+                "#version 300 es\nprecision mediump float;in vec3 aVertexPosition; in vec2 aTextureCoord;uniform mat4 uMVMatrix; uniform mat4 uPMatrix; uniform mat4 uTextureMatrix;out vec2 vTextureCoord; out vec3 vVertexPosition;void main() { gl_Position = uPMatrix * uMVMatrix * vec4(aVertexPosition, 1.0); vTextureCoord = (uTextureMatrix * vec4(aTextureCoord, 0.0, 1.0)).xy; }"
+            ],
+            "data": {
+                "depth": false,
+                "uniforms": {},
+                "isBackground": false
+            },
+            "id": "effect1"
+        },
+        {
+            "breakpoints": [],
+            "visible": true,
+            "aspectRatio": 1,
+            "userDownsample": 1,
+            "layerType": "effect",
+            "type": "flowField",
+            "usesPingPong": false,
+            "speed": 0.2,
+            "trackMouse": 0.17,
+            "trackAxes": "xy",
+            "mouseMomentum": 1,
+            "texture": false,
+            "parentLayer": "afe6a24d-a9f2-47a2-a395-63fa7e2d06ac",
+            "animating": true,
+            "isMask": 0,
+            "compiledFragmentShaders": [
+                "#version 300 es\nprecision highp float;in vec3 vVertexPosition; in vec2 vTextureCoord;uniform sampler2D uTexture; uniform float uTime; uniform vec2 uMousePos; uniform vec2 uResolution; float ease (int easingFunc, float t) { return t; }vec3 hash33(vec3 p3) { p3 = fract(p3 * vec3(0.1031, 0.11369, 0.13787)); p3 += dot(p3, p3.yxz + 19.19); return -1.0 + 2.0 * fract(vec3( (p3.x + p3.y) * p3.z, (p3.x + p3.z) * p3.y, (p3.y + p3.z) * p3.x )); }float perlin_noise(vec3 p) { vec3 pi = floor(p); vec3 pf = p - pi;vec3 w = pf * pf * (3.0 - 2.0 * pf);float n000 = dot(pf - vec3(0.0, 0.0, 0.0), hash33(pi + vec3(0.0, 0.0, 0.0))); float n100 = dot(pf - vec3(1.0, 0.0, 0.0), hash33(pi + vec3(1.0, 0.0, 0.0))); float n010 = dot(pf - vec3(0.0, 1.0, 0.0), hash33(pi + vec3(0.0, 1.0, 0.0))); float n110 = dot(pf - vec3(1.0, 1.0, 0.0), hash33(pi + vec3(1.0, 1.0, 0.0))); float n001 = dot(pf - vec3(0.0, 0.0, 1.0), hash33(pi + vec3(0.0, 0.0, 1.0))); float n101 = dot(pf - vec3(1.0, 0.0, 1.0), hash33(pi + vec3(1.0, 0.0, 1.0))); float n011 = dot(pf - vec3(0.0, 1.0, 1.0), hash33(pi + vec3(0.0, 1.0, 1.0))); float n111 = dot(pf - vec3(1.0, 1.0, 1.0), hash33(pi + vec3(1.0, 1.0, 1.0)));float nx00 = mix(n000, n100, w.x); float nx01 = mix(n001, n101, w.x); float nx10 = mix(n010, n110, w.x); float nx11 = mix(n011, n111, w.x);float nxy0 = mix(nx00, nx10, w.y); float nxy1 = mix(nx01, nx11, w.y);float nxyz = mix(nxy0, nxy1, w.z);return nxyz; }const float MAX_ITERATIONS = 16.; vec2 flow (in vec2 st) { float aspectRatio = uResolution.x/uResolution.y;vec2 mPos = vec2(0.5, 0.5) + mix(vec2(0), (uMousePos-0.5), 0.1700); vec2 pos = mix(vec2(0.5, 0.5), mPos, floor(1.0000)); float dist = ease(0, max(0.,1. - distance(st * vec2(aspectRatio, 1), mPos * vec2(aspectRatio, 1)) * 4. * (1. - 1.0000)));float sprd = (0.4000 + 0.01) / ((aspectRatio + 1.) / 2.); float amt = 0.5400 * 0.01 * dist; if(amt <= 0.) { return st; }vec2 invPos = 1. - pos; float freq = 5. * sprd; float t = 0.0000*5. + uTime/60.; float degrees = 360. * (0.7695 * 6.); float radians = degrees * 3.1415926 / 180.;for (float i = 0.; i < MAX_ITERATIONS; i++) { vec2 scaled = (st - 0.5) * vec2(aspectRatio, 1) + invPos; float perlin = perlin_noise(vec3((scaled - 0.5) * freq, t)) - 0.5; float ang = perlin * radians; st += vec2(cos(ang), sin(ang)) * amt; st = clamp(st, 0., 1.); }return st; }out vec4 fragColor;void main() { vec2 uv = vTextureCoord; vec4 color = texture(uTexture, mix(uv, flow(uv), 0.9000)); fragColor = color;}"
+            ],
+            "compiledVertexShaders": [
+                "#version 300 es\nprecision mediump float;in vec3 aVertexPosition; in vec2 aTextureCoord;uniform mat4 uMVMatrix; uniform mat4 uPMatrix; uniform mat4 uTextureMatrix;out vec2 vTextureCoord; out vec3 vVertexPosition;void main() { gl_Position = uPMatrix * uMVMatrix * vec4(aVertexPosition, 1.0); vTextureCoord = (uTextureMatrix * vec4(aTextureCoord, 0.0, 1.0)).xy; }"
+            ],
+            "data": {
+                "depth": false,
+                "uniforms": {},
+                "isBackground": false
+            },
+            "id": "effect2"
+        }
+    ],
+    "options": {
+        "name": "Copy of Creating AI Animation (Remix)",
+        "fps": 60,
+        "dpi": 1.5,
+        "scale": 1,
+        "includeLogo": false,
+        "isProduction": false
+    },
+    "version": "1.4.35",
+    "id": "OB05IBrykEaM2b7wv0oV"
+}

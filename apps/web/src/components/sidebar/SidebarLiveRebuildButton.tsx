@@ -38,8 +38,10 @@ export function SidebarLiveRebuildButton() {
       setStarted(true);
       toastManager.add({
         type: "success",
-        title: "T3 Code Live rebuild started",
-        description: `The app will stay open while it builds, then replace and reopen the signed Nightly package. Log: ${result.value.logPath}`,
+        title: "Rebuilding T3 Code Live…",
+        description:
+          "This usually takes a few minutes. The app will close and reopen itself when the signed Nightly package is ready.",
+        timeout: 0,
       });
       return;
     }
@@ -60,7 +62,12 @@ export function SidebarLiveRebuildButton() {
     return null;
   }
 
-  const label = started ? "T3 Code Live rebuild is running" : "Rebuild and relaunch T3 Code Live";
+  const label = starting
+    ? "Starting T3 Code Live rebuild"
+    : started
+      ? "T3 Code Live is rebuilding and will restart automatically"
+      : "Rebuild and relaunch T3 Code Live";
+  const busy = starting || started;
 
   return (
     <Tooltip>
@@ -69,15 +76,22 @@ export function SidebarLiveRebuildButton() {
           <button
             type="button"
             aria-label={label}
-            disabled={starting || started}
-            className="inline-flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground/60 transition-colors hover:bg-accent hover:text-foreground disabled:cursor-default disabled:opacity-55"
+            disabled={busy}
+            className={
+              busy
+                ? "inline-flex h-7 shrink-0 items-center justify-center gap-1.5 rounded-md bg-warning/14 px-2 text-warning disabled:cursor-default"
+                : "inline-flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground/60 transition-colors hover:bg-accent hover:text-foreground"
+            }
             onClick={() => void handleClick()}
           >
-            {starting ? (
+            {busy ? (
               <LoaderIcon className="size-3.5 animate-spin" />
             ) : (
-              <PowerIcon className={started ? "size-3.5 animate-pulse" : "size-3.5"} />
+              <PowerIcon className="size-3.5" />
             )}
+            {busy ? (
+              <span className="text-xs font-medium">{starting ? "Starting…" : "Rebuilding…"}</span>
+            ) : null}
           </button>
         }
       />

@@ -5,20 +5,21 @@ import {
   squashAtomCommandFailure,
   type AtomCommandResult,
 } from "@t3tools/client-runtime/state/runtime";
-import type { LiveForkUpdateResult } from "@t3tools/contracts";
+import type { LiveForkUpdateResult, ScopedThreadRef } from "@t3tools/contracts";
 import { useNavigate } from "@tanstack/react-router";
 import {
   BotIcon,
   CircleCheckIcon,
   DownloadIcon,
   LoaderIcon,
+  PowerIcon,
   RefreshCwIcon,
   XIcon,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { APP_BASE_NAME, APP_VERSION } from "../../branding";
-import { useProjects } from "../../state/entities";
+import { useProjects, useThread, useThreadMessages } from "../../state/entities";
 import { usePrimaryEnvironment } from "../../state/environments";
 import { liveForkUpdateEnvironment } from "../../state/liveForkUpdate";
 import { primaryServerProvidersAtom } from "../../state/server";
@@ -34,6 +35,7 @@ import { stackedThreadToast, toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import {
   getForkUpdatePillView,
+  resolveForkRepairAgentLifecycle,
   type ForkUpdatePillPhase,
 } from "./SidebarForkSourceUpdatePill.logic";
 
@@ -57,12 +59,17 @@ export function SidebarForkSourceUpdatePill() {
   const providers = useAtomValue(primaryServerProvidersAtom);
   const checkUpdate = useAtomCommand(liveForkUpdateEnvironment.check, { reportFailure: false });
   const mergeUpdate = useAtomCommand(liveForkUpdateEnvironment.merge, { reportFailure: false });
+  const rebuildApp = useAtomCommand(liveForkUpdateEnvironment.rebuild, { reportFailure: false });
   const createThread = useAtomCommand(threadEnvironment.create, { reportFailure: false });
   const deleteThread = useAtomCommand(threadEnvironment.delete, { reportFailure: false });
   const startThreadTurn = useAtomCommand(threadEnvironment.startTurn, { reportFailure: false });
   const [result, setResult] = useState<LiveForkUpdateResult | null>(null);
   const [phase, setPhase] = useState<ForkUpdatePillPhase>("idle");
   const [dismissedSha, setDismissedSha] = useState<string | null>(null);
+  const [repairThreadRef, setRepairThreadRef] = useState<ScopedThreadRef | null>(null);
+  const completionToastShownRef = useRef(false);
+  const repairThread = useThread(repairThreadRef);
+  const repairMessages = useThreadMessages(repairThreadRef);
   const sourceProject = useMemo(
     () => findLiveForkSourceProject(projects, primaryEnvironment?.environmentId ?? null),
     [primaryEnvironment?.environmentId, projects],
@@ -74,6 +81,17 @@ export function SidebarForkSourceUpdatePill() {
         projectDefaultModelSelection: sourceProject?.defaultModelSelection ?? null,
       }),
     [providers, sourceProject?.defaultModelSelection],
+  );
+  const repairAgentLifecycle = useMemo(
+    () =>
+      resolveForkRepairAgentLifecycle({
+        latestTurnState: repairThread?.latestTurn?.state ?? null,
+        sessionStatus: repairThread?.session?.status ?? null,
+        assistantMessages: repairMessages
+          .filter((message) => message.role === "assistant")
+          .map((message) => ({ text: message.text, streaming: message.streaming })),
+      }),
+    [repairMessages, repairThread?.latestTurn?.state, repairThread?.session?.status],
   );
 
   const runCheck = useCallback(
@@ -103,11 +121,84 @@ export function SidebarForkSourceUpdatePill() {
     };
   }, [runCheck]);
 
+  const startLiveRebuild = useCallback(async () => {
+    if (!sourceProject || phase === "rebuilding") return;
+    setPhase("rebuilding");
+    const rebuildResult = await rebuildApp({
+      environmentId: sourceProject.environmentId,
+      input: { cwd: sourceProject.workspaceRoot },
+    });
+
+    if (rebuildResult._tag === "Success") {
+      toastManager.add({
+        type: "success",
+        title: "T3 Code Live rebuild started",
+        description:
+          "The app will stay open while it builds, then replace and reopen the signed Nightly package.",
+      });
+      return;
+    }
+
+    setPhase("restart_ready");
+    if (!isAtomCommandInterrupted(rebuildResult)) {
+      const error = squashAtomCommandFailure(rebuildResult);
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: "Could not restart T3 Code Live",
+          description:
+            error instanceof Error ? error.message : "The rebuild command could not start.",
+        }),
+      );
+    }
+  }, [phase, rebuildApp, sourceProject]);
+
   useEffect(() => {
-    if (result?.status !== "merged") return;
-    const timeoutId = window.setTimeout(() => setResult(null), 8_000);
-    return () => window.clearTimeout(timeoutId);
-  }, [result]);
+    if (phase !== "agent_working" || !sourceProject || repairAgentLifecycle === "working") {
+      return;
+    }
+    if (repairAgentLifecycle === "review") {
+      setPhase("agent_review");
+      return;
+    }
+
+    setPhase("verifying_agent");
+    void (async () => {
+      const checkResult = await checkUpdate({
+        environmentId: sourceProject.environmentId,
+        input: { cwd: sourceProject.workspaceRoot },
+      });
+      if (checkResult._tag === "Success") {
+        setResult(checkResult.value);
+        const verified =
+          checkResult.value.upstreamAhead === 0 &&
+          checkResult.value.conflictingFiles.length === 0 &&
+          (checkResult.value.status === "current" || checkResult.value.status === "merged");
+        setPhase(verified ? "restart_ready" : "agent_review");
+        return;
+      }
+      setPhase("agent_review");
+    })();
+  }, [checkUpdate, phase, repairAgentLifecycle, sourceProject]);
+
+  useEffect(() => {
+    const shouldPrompt =
+      phase === "restart_ready" || (phase === "idle" && result?.status === "merged");
+    if (!shouldPrompt || completionToastShownRef.current) return;
+    completionToastShownRef.current = true;
+    toastManager.add(
+      stackedThreadToast({
+        type: "success",
+        title: "T3 Code Live update is ready",
+        description: "The source update passed verification. Restart once to run the new code.",
+        timeout: 0,
+        actionProps: {
+          children: "Restart to apply",
+          onClick: () => void startLiveRebuild(),
+        },
+      }),
+    );
+  }, [phase, result?.status, startLiveRebuild]);
 
   const launchRepairAgent = useCallback(async () => {
     if (!sourceProject || !result || !updaterModelSelection || phase !== "idle") return;
@@ -119,6 +210,8 @@ export function SidebarForkSourceUpdatePill() {
       installedVersion: APP_VERSION,
       updateResult: result,
     });
+    completionToastShownRef.current = false;
+    setRepairThreadRef(null);
     setPhase("launching_agent");
 
     const createResult = await createThread({
@@ -169,7 +262,13 @@ export function SidebarForkSourceUpdatePill() {
       failure = navigateResult._tag === "Failure" ? navigateResult : null;
     }
 
-    if (failure !== null) {
+    if (failure === null) {
+      setRepairThreadRef({
+        environmentId: sourceProject.environmentId,
+        threadId,
+      });
+      setPhase("agent_working");
+    } else {
       await deleteThread({
         environmentId: sourceProject.environmentId,
         input: { threadId },
@@ -185,6 +284,7 @@ export function SidebarForkSourceUpdatePill() {
           }),
         );
       }
+      setRepairThreadRef(null);
       setPhase("idle");
     }
   }, [
@@ -200,6 +300,7 @@ export function SidebarForkSourceUpdatePill() {
 
   const runAutomaticMerge = useCallback(async () => {
     if (!sourceProject || phase !== "idle") return;
+    completionToastShownRef.current = false;
     setPhase("merging");
     const mergeResult = await mergeUpdate({
       environmentId: sourceProject.environmentId,
@@ -241,7 +342,9 @@ export function SidebarForkSourceUpdatePill() {
   if (APP_BASE_NAME !== "T3 Code Live" || !sourceProject || !view) return null;
 
   const agentUnavailable = view.action === "agent" && updaterModelSelection === null;
-  const disabled = view.busy || view.action === "none" || agentUnavailable;
+  const agentResultUnavailable = view.action === "open_agent" && repairThreadRef === null;
+  const disabled =
+    view.busy || view.action === "none" || agentUnavailable || agentResultUnavailable;
   const handleAction = () => {
     if (view.action === "check") {
       void runCheck(true);
@@ -249,6 +352,13 @@ export function SidebarForkSourceUpdatePill() {
       void runAutomaticMerge();
     } else if (view.action === "agent") {
       void launchRepairAgent();
+    } else if (view.action === "open_agent" && repairThreadRef) {
+      void navigate({
+        to: "/$environmentId/$threadId",
+        params: repairThreadRef,
+      });
+    } else if (view.action === "rebuild") {
+      void startLiveRebuild();
     }
   };
 
@@ -268,8 +378,10 @@ export function SidebarForkSourceUpdatePill() {
             >
               {view.busy ? (
                 <LoaderIcon className="size-3.5 animate-spin" />
-              ) : view.action === "agent" ? (
+              ) : view.action === "agent" || view.action === "open_agent" ? (
                 <BotIcon className="size-3.5" />
+              ) : view.action === "rebuild" ? (
+                <PowerIcon className="size-3.5" />
               ) : view.tone === "success" ? (
                 <CircleCheckIcon className="size-3.5" />
               ) : view.action === "check" ? (
@@ -277,7 +389,17 @@ export function SidebarForkSourceUpdatePill() {
               ) : (
                 <DownloadIcon className="size-3.5" />
               )}
-              <span>{agentUnavailable ? "GPT-5.6-Sol unavailable" : view.title}</span>
+              <span className="min-w-0 truncate">
+                {agentUnavailable ? "GPT-5.6-Sol unavailable" : view.title}
+              </span>
+              {!agentUnavailable && view.trailingLabel ? (
+                <span
+                  aria-hidden="true"
+                  className="ml-auto shrink-0 text-[11px] font-normal tabular-nums opacity-70"
+                >
+                  {view.trailingLabel}
+                </span>
+              ) : null}
             </button>
           }
         />

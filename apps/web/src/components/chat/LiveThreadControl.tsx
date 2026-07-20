@@ -18,8 +18,9 @@ import {
   readLiveThreadContext,
 } from "./liveThreadContext";
 import { parseLiveThreadDataMessage } from "./liveThreadEvents";
+import { LiveThreadOrb } from "./LiveThreadOrb";
 
-type LiveThreadPhase =
+export type LiveThreadPhase =
   | "idle"
   | "requesting"
   | "connecting"
@@ -29,6 +30,7 @@ type LiveThreadPhase =
   | "error";
 
 export const LIVE_THREAD_PANEL_PORTAL_ID = "t3-live-thread-panel";
+const LIVE_THREAD_TRANSCRIPT_CHARACTERS = 360;
 
 function waitForIceGathering(peer: RTCPeerConnection): Promise<void> {
   if (peer.iceGatheringState === "complete") return Promise.resolve();
@@ -164,9 +166,11 @@ export function LiveThreadControl(props: {
       channel.addEventListener("message", (message) => {
         const event = parseLiveThreadDataMessage(message.data);
         if (event.type === "transcript.delta") {
-          setTranscript((current) => `${current}${event.text}`.slice(-600));
+          setTranscript((current) =>
+            `${current}${event.text}`.slice(-LIVE_THREAD_TRANSCRIPT_CHARACTERS),
+          );
         } else if (event.type === "transcript.done") {
-          setTranscript(event.text.slice(-600));
+          setTranscript(event.text.slice(-LIVE_THREAD_TRANSCRIPT_CHARACTERS));
           if (event.role === "user") latestUserTranscriptRef.current = event.text;
         } else if (event.type === "context.request") {
           if (handledToolCallIdsRef.current.has(event.callId)) return;
@@ -306,9 +310,25 @@ export function LiveThreadControl(props: {
   }, [liveThreadSurfacePresent, stop]);
 
   useLayoutEffect(() => {
-    setPortalTarget(
-      liveThreadSurfaceActive ? document.getElementById(LIVE_THREAD_PANEL_PORTAL_ID) : null,
-    );
+    if (!liveThreadSurfaceActive) {
+      setPortalTarget(null);
+      return;
+    }
+
+    const resolvePortalTarget = () => {
+      const target = document.getElementById(LIVE_THREAD_PANEL_PORTAL_ID);
+      if (!target) return false;
+      setPortalTarget(target);
+      return true;
+    };
+
+    if (resolvePortalTarget()) return;
+
+    const observer = new MutationObserver(() => {
+      if (resolvePortalTarget()) observer.disconnect();
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+    return () => observer.disconnect();
   }, [liveThreadSurfaceActive]);
 
   const active = phase !== "idle" && phase !== "error";
@@ -330,8 +350,8 @@ export function LiveThreadControl(props: {
                   : "Needs attention";
 
   const panel = (
-    <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-6 py-8 sm:px-8">
-      <div className="mx-auto flex w-full max-w-xl flex-1 flex-col">
+    <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-6 py-6 sm:px-8">
+      <div className="mx-auto flex w-full max-w-lg flex-1 flex-col">
         <div className="flex items-start justify-between gap-4">
           <div>
             <div className="flex items-center gap-2.5">
@@ -339,14 +359,15 @@ export function LiveThreadControl(props: {
               <h2 className="text-sm font-medium text-foreground">Live Thread</h2>
             </div>
             <p className="mt-1.5 text-xs text-muted-foreground">
-              Talk through the current task. Codex only sends a follow-up after explicit approval.
+              Talk it through. Nothing sends without approval.
             </p>
           </div>
           {phase !== "idle" ? (
             <Button
               type="button"
-              variant="outline"
+              variant="ghost"
               size="sm"
+              className="text-muted-foreground"
               onClick={() => void stop()}
               disabled={phase === "stopping"}
             >
@@ -356,89 +377,60 @@ export function LiveThreadControl(props: {
           ) : null}
         </div>
 
-        <div className="flex flex-1 flex-col items-center justify-center py-10 text-center">
-          <div className="relative flex size-40 items-center justify-center" aria-hidden>
-            <div
-              className={cn(
-                "absolute size-40 rounded-full border border-border/50 transition-all duration-700",
-                phase === "listening" && "scale-105 border-emerald-400/30",
-              )}
-            />
-            <div
-              className={cn(
-                "absolute size-28 rounded-full border border-border/70 bg-muted/20 transition-all duration-500",
-                phase === "listening" && "animate-pulse border-emerald-400/40 bg-emerald-400/5",
-                phase === "error" && "border-red-400/40 bg-red-400/5",
-              )}
-            />
-            <div
-              className={cn(
-                "relative flex size-16 items-center justify-center rounded-full bg-foreground text-background shadow-lg transition-all duration-300",
-                phase === "listening" && "scale-105 bg-emerald-400 text-emerald-950",
-                phase === "error" && "bg-red-400 text-red-950",
-              )}
-            >
-              <WavesIcon className="size-6" />
-            </div>
-          </div>
+        <div className="flex flex-1 flex-col items-center justify-center py-8 text-center">
+          <LiveThreadOrb phase={phase} />
 
-          <p className="mt-6 text-base font-medium text-foreground">{status}</p>
-          <p className="mt-1 text-xs text-muted-foreground">
-            {contextReads > 0
-              ? `${contextReads} task context read${contextReads === 1 ? "" : "s"}`
-              : "Task messages available on request"}
-          </p>
+          <p className="mt-4 text-sm font-medium text-foreground">{status}</p>
+          {contextReads > 0 ? (
+            <p className="mt-1 text-[11px] text-muted-foreground">Context read ×{contextReads}</p>
+          ) : null}
 
           {error ? <p className="mt-5 max-w-md text-sm leading-6 text-red-400">{error}</p> : null}
           {transcript && !handoff ? (
-            <p className="mt-6 max-w-lg text-pretty text-lg leading-8 text-foreground/90">
+            <p
+              className="mt-7 line-clamp-5 max-w-md text-pretty text-base leading-7 text-foreground/85"
+              aria-live="polite"
+            >
               {transcript}
             </p>
           ) : null}
 
           {phase === "idle" || phase === "error" ? (
-            <Button type="button" size="sm" className="mt-6" onClick={() => void start()}>
+            <Button type="button" size="sm" className="mt-5" onClick={() => void start()}>
               <MicIcon className="size-4" />
               {phase === "error" ? "Try again" : "Start talking"}
             </Button>
           ) : null}
         </div>
 
-        <div className="border-t border-border/70 pt-4">
-          <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-[11px] text-muted-foreground">
-            <span>Task context</span>
-            <span>Explicit follow-ups only</span>
-            <span>Microphone stays local until connected</span>
+        {handoff ? (
+          <div className="border-t border-border/70 pt-5">
+            {phase === "sent" ? (
+              <div>
+                <p className="text-[11px] text-muted-foreground">Sent request</p>
+                <p className="mt-2 text-sm leading-6 text-foreground/90">{handoff}</p>
+              </div>
+            ) : (
+              <div>
+                <label className="text-xs text-muted-foreground" htmlFor="live-thread-handoff">
+                  Review follow-up
+                </label>
+                <textarea
+                  id="live-thread-handoff"
+                  value={handoff}
+                  onChange={(event) => setHandoff(event.target.value)}
+                  className="mt-2 min-h-32 w-full resize-y rounded-md border border-border bg-background p-3 text-sm leading-6 text-foreground outline-none focus:border-ring"
+                />
+                <div className="mt-3 flex justify-end">
+                  <Button type="button" size="sm" onClick={dispatch}>
+                    <ArrowUpIcon className="size-3.5" />
+                    Send to Codex
+                  </Button>
+                </div>
+              </div>
+            )}
           </div>
-          {handoff ? (
-            <div className="mt-5 border-t border-border/70 pt-5">
-              {phase === "sent" ? (
-                <div>
-                  <p className="text-[11px] text-muted-foreground">Sent request</p>
-                  <p className="mt-2 text-sm leading-6 text-foreground/90">{handoff}</p>
-                </div>
-              ) : (
-                <div>
-                  <label className="text-xs text-muted-foreground" htmlFor="live-thread-handoff">
-                    Review follow-up
-                  </label>
-                  <textarea
-                    id="live-thread-handoff"
-                    value={handoff}
-                    onChange={(event) => setHandoff(event.target.value)}
-                    className="mt-2 min-h-32 w-full resize-y rounded-md border border-border bg-background p-3 text-sm leading-6 text-foreground outline-none focus:border-ring"
-                  />
-                  <div className="mt-3 flex justify-end">
-                    <Button type="button" size="sm" onClick={dispatch}>
-                      <ArrowUpIcon className="size-3.5" />
-                      Send to Codex
-                    </Button>
-                  </div>
-                </div>
-              )}
-            </div>
-          ) : null}
-        </div>
+        ) : null}
       </div>
     </div>
   );

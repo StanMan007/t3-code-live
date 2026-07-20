@@ -4,34 +4,43 @@ import { Atom } from "effect/unstable/reactivity";
 import type { EnvironmentRegistry } from "../connection/registry.ts";
 import { createAtomCommandScheduler, createEnvironmentRpcCommand } from "./runtime.ts";
 
+type LiveForkCommand = "check" | "merge" | "rebuild";
+
+export function liveForkUpdateCommandKey(
+  command: LiveForkCommand,
+  target: { readonly environmentId: string; readonly input: { readonly cwd: string } },
+): string {
+  return JSON.stringify([command, target.environmentId, target.input.cwd]);
+}
+
 export function createLiveForkUpdateEnvironmentAtoms<R, E>(
   runtime: Atom.AtomRuntime<EnvironmentRegistry | R, E>,
 ) {
   const scheduler = createAtomCommandScheduler();
-  const concurrency = {
+  const concurrency = (command: LiveForkCommand) => ({
     mode: "singleFlight" as const,
-    key: ({ environmentId, input }: { environmentId: string; input: { cwd: string } }) =>
-      JSON.stringify([environmentId, input.cwd]),
-  };
+    key: (target: { readonly environmentId: string; readonly input: { readonly cwd: string } }) =>
+      liveForkUpdateCommandKey(command, target),
+  });
 
   return {
     check: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:live-fork-update:check",
       tag: WS_METHODS.liveForkUpdateCheck,
       scheduler,
-      concurrency,
+      concurrency: concurrency("check"),
     }),
     merge: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:live-fork-update:merge",
       tag: WS_METHODS.liveForkUpdateMerge,
       scheduler,
-      concurrency,
+      concurrency: concurrency("merge"),
     }),
     rebuild: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:live-fork:rebuild",
       tag: WS_METHODS.liveForkRebuild,
       scheduler,
-      concurrency,
+      concurrency: concurrency("rebuild"),
     }),
   };
 }
