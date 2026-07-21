@@ -54,7 +54,9 @@ function makeGitLayer(mode: GitMode) {
     if (args === "diff --name-only -z HEAD...upstream/main") {
       return Effect.succeed(
         output(
-          mode === "dirty-overlap" ? "local.ts\0apps/server/src/ws.ts\0" : "apps/server/src/ws.ts\0",
+          mode === "dirty-overlap"
+            ? "local.ts\0apps/server/src/ws.ts\0"
+            : "apps/server/src/ws.ts\0",
         ),
       );
     }
