@@ -161,12 +161,64 @@ export const merge = Effect.fn("LiveForkUpdater.merge")(function* (cwd: string) 
   if (before.upstreamAhead === 0) {
     return { ...before, status: "current" } satisfies LiveForkUpdateResult;
   }
+
+  let preservedLocalFileCount = 0;
   if (inspection.dirty) {
-    return {
-      ...before,
-      status: "needs_agent",
-      detail: "The fork has local changes. An agent should preserve them before merging upstream.",
-    } satisfies LiveForkUpdateResult;
+    const run = (operation: string, args: ReadonlyArray<string>) =>
+      git.execute({ operation, cwd, args, allowNonZeroExit: false });
+
+    // A merge commit snapshots the index, so anything pre-staged would be
+    // silently folded into the update commit. Only an agent can sort that out.
+    const stagedResult = yield* run("LiveForkUpdater.stagedFiles", [
+      "diff",
+      "--name-only",
+      "--cached",
+      "-z",
+    ]);
+    if (splitNullSeparated(stagedResult.stdout).length > 0) {
+      return {
+        ...before,
+        status: "needs_agent",
+        detail:
+          "The fork has staged local changes that a merge commit would absorb. An agent should preserve them before merging upstream.",
+      } satisfies LiveForkUpdateResult;
+    }
+
+    // Git only refuses a merge when it would overwrite uncommitted work. If no
+    // dirty or untracked file intersects what upstream touched since the merge
+    // base, the merge is safe and leaves local edits exactly as they are.
+    const unstagedResult = yield* run("LiveForkUpdater.unstagedFiles", [
+      "diff",
+      "--name-only",
+      "-z",
+    ]);
+    const untrackedResult = yield* run("LiveForkUpdater.untrackedFiles", [
+      "ls-files",
+      "--others",
+      "--exclude-standard",
+      "-z",
+    ]);
+    const localFiles = new Set([
+      ...splitNullSeparated(unstagedResult.stdout),
+      ...splitNullSeparated(untrackedResult.stdout),
+    ]);
+    const upstreamTouchedResult = yield* run("LiveForkUpdater.upstreamTouchedFiles", [
+      "diff",
+      "--name-only",
+      "-z",
+      `HEAD...${UPSTREAM_REF}`,
+    ]);
+    const overlap = splitNullSeparated(upstreamTouchedResult.stdout).filter((file) =>
+      localFiles.has(file),
+    );
+    if (overlap.length > 0) {
+      return {
+        ...before,
+        status: "needs_agent",
+        detail: `The fork has local changes to files upstream also modified (${overlap.join(", ")}). An agent should preserve them before merging upstream.`,
+      } satisfies LiveForkUpdateResult;
+    }
+    preservedLocalFileCount = localFiles.size;
   }
 
   const mergeResult = yield* git.execute({
@@ -192,6 +244,10 @@ export const merge = Effect.fn("LiveForkUpdater.merge")(function* (cwd: string) 
   return {
     ...after.result,
     status: "merged",
-    detail: `Merged ${before.upstreamAhead} upstream commit${before.upstreamAhead === 1 ? "" : "s"}.`,
+    detail: `Merged ${before.upstreamAhead} upstream commit${before.upstreamAhead === 1 ? "" : "s"}.${
+      preservedLocalFileCount > 0
+        ? ` Local edits to ${preservedLocalFileCount} file${preservedLocalFileCount === 1 ? "" : "s"} were left untouched.`
+        : ""
+    }`,
   } satisfies LiveForkUpdateResult;
 });
