@@ -19,6 +19,7 @@ import {
   ProviderSendTurnInput,
   ProviderSessionStartInput,
   ProviderStopSessionInput,
+  ProviderStopTaskInput,
   type ProviderInstanceId,
   type ProviderDriverKind,
   type ProviderRuntimeEvent,
@@ -754,6 +755,26 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     },
   );
 
+  const stopTask: ProviderServiceMethod<"stopTask"> = Effect.fn("stopTask")(function* (rawInput) {
+    const input = yield* decodeInputOrValidationError({
+      operation: "ProviderService.stopTask",
+      schema: ProviderStopTaskInput,
+      payload: rawInput,
+    });
+    const routed = yield* resolveRoutableSession({
+      threadId: input.threadId,
+      operation: "ProviderService.stopTask",
+      allowRecovery: true,
+    });
+    if (!routed.adapter.stopTask) {
+      return yield* new ProviderValidationError({
+        operation: "ProviderService.stopTask",
+        issue: `Provider '${routed.adapter.provider}' does not support stopping individual tasks.`,
+      });
+    }
+    yield* routed.adapter.stopTask(routed.threadId, input.taskId);
+  });
+
   const respondToRequest: ProviderServiceMethod<"respondToRequest"> = Effect.fn("respondToRequest")(
     function* (rawInput) {
       const input = yield* decodeInputOrValidationError({
@@ -1072,6 +1093,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     startSession,
     sendTurn,
     interruptTurn,
+    stopTask,
     respondToRequest,
     respondToUserInput,
     stopSession,

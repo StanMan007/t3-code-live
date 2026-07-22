@@ -58,6 +58,7 @@ class FakeClaudeQuery implements AsyncIterable<SDKMessage> {
   public readonly setModelCalls: Array<string | undefined> = [];
   public readonly setPermissionModeCalls: Array<string> = [];
   public readonly setMaxThinkingTokensCalls: Array<number | null> = [];
+  public readonly stopTaskCalls: Array<string> = [];
   public closeCalls = 0;
 
   emit(message: SDKMessage): void {
@@ -108,6 +109,10 @@ class FakeClaudeQuery implements AsyncIterable<SDKMessage> {
 
   readonly setMaxThinkingTokens = async (maxThinkingTokens: number | null): Promise<void> => {
     this.setMaxThinkingTokensCalls.push(maxThinkingTokens);
+  };
+
+  readonly stopTask = async (taskId: string): Promise<void> => {
+    this.stopTaskCalls.push(taskId);
   };
 
   readonly close = (): void => {
@@ -268,6 +273,47 @@ const THREAD_ID = ThreadId.make("thread-claude-1");
 const RESUME_THREAD_ID = ThreadId.make("thread-claude-resume");
 
 describe("ClaudeAdapterLive", () => {
+  it.effect("marks T3 prompts as human input and enables workflow observability", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({ threadId: THREAD_ID, input: "use a workflow" });
+
+      const createInput = harness.getLastCreateQueryInput();
+      const prompt = yield* Effect.promise(() => readFirstPromptMessage(createInput));
+      assert.deepEqual(prompt?.origin, { kind: "human" });
+      assert.equal(createInput?.options.agentProgressSummaries, true);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("stops an individual Claude workflow task through the SDK", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      const stopTask = adapter.stopTask;
+      if (!stopTask) return yield* Effect.die(new Error("Claude adapter did not expose stopTask"));
+      yield* stopTask(THREAD_ID, "workflow-task-1");
+      assert.deepEqual(harness.query.stopTaskCalls, ["workflow-task-1"]);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("returns validation error for non-claude provider on startSession", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
@@ -1691,6 +1737,16 @@ describe("ClaudeAdapterLive", () => {
           tool_uses: 4,
           duration_ms: 987,
         },
+        workflow_progress: [
+          { type: "workflow_phase", index: 1, title: "Inspect" },
+          {
+            type: "workflow_agent",
+            agentId: "agent-1",
+            label: "inspect:package",
+            phaseTitle: "Inspect",
+            state: "progress",
+          },
+        ],
         session_id: "sdk-session-task-summary",
         uuid: "task-progress-1",
       } as unknown as SDKMessage);
@@ -1704,6 +1760,16 @@ describe("ClaudeAdapterLive", () => {
           "Code reviewer checked the migration edge cases.",
         );
         assert.equal(progressEvent.payload.description, "Running background teammate");
+        assert.deepEqual(progressEvent.payload.workflowProgress, [
+          { type: "workflow_phase", index: 1, title: "Inspect" },
+          {
+            type: "workflow_agent",
+            agentId: "agent-1",
+            label: "inspect:package",
+            phaseTitle: "Inspect",
+            state: "progress",
+          },
+        ]);
       }
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),

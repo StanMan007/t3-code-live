@@ -501,6 +501,14 @@ export function runtimeEventToActivities(
           payload: {
             taskId: event.payload.taskId,
             ...(event.payload.taskType ? { taskType: event.payload.taskType } : {}),
+            ...(event.payload.toolUseId ? { toolUseId: event.payload.toolUseId } : {}),
+            ...(event.payload.subagentType ? { subagentType: event.payload.subagentType } : {}),
+            ...(event.payload.workflowName ? { workflowName: event.payload.workflowName } : {}),
+            ...(event.payload.workflowRunId ? { workflowRunId: event.payload.workflowRunId } : {}),
+            ...(event.payload.prompt ? { prompt: event.payload.prompt } : {}),
+            ...(event.payload.transcriptPath
+              ? { transcriptPath: event.payload.transcriptPath }
+              : {}),
             ...(event.payload.description
               ? { detail: truncateDetail(event.payload.description) }
               : {}),
@@ -531,6 +539,51 @@ export function runtimeEventToActivities(
             ...(event.payload.summary ? { summary: truncateDetail(event.payload.summary) } : {}),
             ...(event.payload.lastToolName ? { lastToolName: event.payload.lastToolName } : {}),
             ...(event.payload.usage !== undefined ? { usage: event.payload.usage } : {}),
+            ...(event.payload.toolUseId ? { toolUseId: event.payload.toolUseId } : {}),
+            ...(event.payload.subagentType ? { subagentType: event.payload.subagentType } : {}),
+            ...(event.payload.workflowRunId ? { workflowRunId: event.payload.workflowRunId } : {}),
+            ...(event.payload.transcriptPath
+              ? { transcriptPath: event.payload.transcriptPath }
+              : {}),
+            ...(event.payload.prompt ? { prompt: event.payload.prompt } : {}),
+            ...(event.payload.workflowProgress
+              ? { workflowProgress: event.payload.workflowProgress }
+              : {}),
+          },
+          turnId: toTurnId(event.turnId) ?? null,
+          ...maybeSequence,
+        },
+      ];
+    }
+
+    case "task.updated": {
+      return [
+        {
+          id: event.eventId,
+          createdAt: event.createdAt,
+          tone: "info",
+          kind: "task.updated",
+          summary: "Task updated",
+          payload: {
+            taskId: event.payload.taskId,
+            patch: event.payload.patch,
+          },
+          turnId: toTurnId(event.turnId) ?? null,
+          ...maybeSequence,
+        },
+      ];
+    }
+
+    case "task.roster": {
+      return [
+        {
+          id: event.eventId,
+          createdAt: event.createdAt,
+          tone: "info",
+          kind: "task.roster",
+          summary: "Background tasks updated",
+          payload: {
+            tasks: event.payload.tasks,
           },
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,
@@ -564,6 +617,12 @@ export function runtimeEventToActivities(
                 }
               : {}),
             ...(event.payload.usage !== undefined ? { usage: event.payload.usage } : {}),
+            ...(event.payload.toolUseId ? { toolUseId: event.payload.toolUseId } : {}),
+            ...(event.payload.workflowRunId ? { workflowRunId: event.payload.workflowRunId } : {}),
+            ...(event.payload.outputFile ? { outputFile: event.payload.outputFile } : {}),
+            ...(event.payload.transcriptPath
+              ? { transcriptPath: event.payload.transcriptPath }
+              : {}),
           },
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,

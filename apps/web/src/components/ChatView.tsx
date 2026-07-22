@@ -19,6 +19,7 @@ import {
   ProviderInteractionMode,
   ProviderDriverKind,
   RuntimeMode,
+  RuntimeTaskId,
   TerminalOpenInput,
 } from "@t3tools/contracts";
 import {
@@ -205,6 +206,7 @@ import {
 } from "../state/entities";
 import { environmentShell } from "../state/shell";
 import { ChatComposer, type ChatComposerHandle } from "./chat/ChatComposer";
+import { ClaudeWorkflowNavigator } from "./chat/ClaudeWorkflowNavigator";
 import { DraftHeroHeadline } from "./chat/DraftHeroHeadline";
 import { ExpandedImageDialog } from "./chat/ExpandedImageDialog";
 import { PullRequestThreadDialog } from "./PullRequestThreadDialog";
@@ -1113,6 +1115,9 @@ function ChatViewContent(props: ChatViewProps) {
   });
   const startThreadTurn = useAtomCommand(threadEnvironment.startTurn, { reportFailure: false });
   const interruptThreadTurn = useAtomCommand(threadEnvironment.interruptTurn, {
+    reportFailure: false,
+  });
+  const stopThreadProviderTask = useAtomCommand(threadEnvironment.stopProviderTask, {
     reportFailure: false,
   });
   const respondToThreadApproval = useAtomCommand(threadEnvironment.respondToApproval, {
@@ -4431,6 +4436,27 @@ function ChatViewContent(props: ChatViewProps) {
     }
   };
 
+  const onStopClaudeWorkflow = useCallback(
+    async (taskId: string) => {
+      if (!activeThreadId) return;
+      const result = await stopThreadProviderTask({
+        environmentId,
+        input: {
+          threadId: activeThreadId,
+          taskId: RuntimeTaskId.make(taskId),
+        },
+      });
+      if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+        const error = squashAtomCommandFailure(result);
+        setThreadError(
+          activeThreadId,
+          error instanceof Error ? error.message : "Failed to stop the Claude workflow.",
+        );
+      }
+    },
+    [activeThreadId, environmentId, setThreadError, stopThreadProviderTask],
+  );
+
   const onRespondToApproval = useCallback(
     async (requestId: ApprovalRequestId, decision: ProviderApprovalDecision) => {
       if (!activeThreadId) return;
@@ -5443,6 +5469,12 @@ function ChatViewContent(props: ChatViewProps) {
                         setThreadError={setThreadError}
                         onExpandImage={onExpandTimelineImage}
                       />
+                      {lockedProvider === "claudeAgent" ? (
+                        <ClaudeWorkflowNavigator
+                          activities={activeThread.activities}
+                          onStopWorkflow={(taskId) => void onStopClaudeWorkflow(taskId)}
+                        />
+                      ) : null}
                     </div>
                     <div
                       className={cn(

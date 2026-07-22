@@ -68,6 +68,9 @@ export interface ProviderAdapterShape<TError> {
    */
   readonly interruptTurn: (threadId: ThreadId, turnId?: TurnId) => Effect.Effect<void, TError>;
 
+  /** Stop one provider-owned background task when supported. */
+  readonly stopTask?: (threadId: ThreadId, taskId: string) => Effect.Effect<void, TError>;
+
   /**
    * Respond to an interactive approval request.
    */

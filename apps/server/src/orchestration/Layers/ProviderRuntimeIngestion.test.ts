@@ -102,6 +102,7 @@ function createProviderServiceHarness() {
     startSession: () => unsupported(),
     sendTurn: () => unsupported(),
     interruptTurn: () => unsupported(),
+    stopTask: () => unsupported(),
     respondToRequest: () => unsupported(),
     respondToUserInput: () => unsupported(),
     stopSession: () => unsupported(),
@@ -3099,6 +3100,16 @@ describe("ProviderRuntimeIngestion", () => {
         taskId: "turn-task-1",
         description: "Comparing the desktop rollout chunks to the app-server stream.",
         summary: "Code reviewer is validating the desktop rollout chunks.",
+        workflowProgress: [
+          { type: "workflow_phase", index: 1, title: "Inspect" },
+          {
+            type: "workflow_agent",
+            agentId: "agent-1",
+            label: "inspect:package",
+            phaseTitle: "Inspect",
+            state: "progress",
+          },
+        ],
       },
     });
 
@@ -3165,6 +3176,16 @@ describe("ProviderRuntimeIngestion", () => {
     expect(progressPayload?.summary).toBe(
       "Code reviewer is validating the desktop rollout chunks.",
     );
+    expect(progressPayload?.workflowProgress).toEqual([
+      { type: "workflow_phase", index: 1, title: "Inspect" },
+      {
+        type: "workflow_agent",
+        agentId: "agent-1",
+        label: "inspect:package",
+        phaseTitle: "Inspect",
+        state: "progress",
+      },
+    ]);
     expect(completed?.kind).toBe("task.completed");
     expect(completedPayload?.detail).toBe("<proposed_plan>\n# Plan title\n</proposed_plan>");
     expect(

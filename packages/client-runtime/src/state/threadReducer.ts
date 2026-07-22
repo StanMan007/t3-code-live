@@ -200,6 +200,9 @@ export function applyThreadDetailEvent(
       };
     }
 
+    case "thread.provider-task-stop-requested":
+      return { kind: "unchanged" };
+
     // ── Messages ────────────────────────────────────────────────────
     case "thread.message-sent": {
       const message: OrchestrationMessage = {

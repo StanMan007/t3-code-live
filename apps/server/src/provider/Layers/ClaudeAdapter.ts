@@ -210,6 +210,7 @@ interface ClaudeQueryRuntime extends AsyncIterable<SDKMessage> {
   readonly setPermissionMode: (mode: PermissionMode) => Promise<void>;
   readonly setMaxThinkingTokens: (maxThinkingTokens: number | null) => Promise<void>;
   readonly getContextUsage?: () => Promise<SDKControlGetContextUsageResponse>;
+  readonly stopTask?: (taskId: string) => Promise<void>;
   readonly close: () => void;
 }
 
@@ -714,7 +715,11 @@ function readClaudeToolUseResult(message: SDKMessage): Record<string, unknown> |
   if (message.type !== "user") {
     return undefined;
   }
-  const result = (message as { readonly tool_use_result?: unknown }).tool_use_result;
+  const candidate = message as {
+    readonly tool_use_result?: unknown;
+    readonly toolUseResult?: unknown;
+  };
+  const result = candidate.tool_use_result ?? candidate.toolUseResult;
   return result !== null && typeof result === "object" && !Array.isArray(result)
     ? (result as Record<string, unknown>)
     : undefined;
@@ -910,6 +915,7 @@ function buildUserMessage(input: {
     type: "user",
     session_id: "",
     parent_tool_use_id: null,
+    origin: { kind: "human" },
     message: {
       role: "user",
       content: input.sdkContent as unknown as SDKUserMessage["message"]["content"],
@@ -2356,10 +2362,19 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       const [index, tool] = toolEntry;
       const itemStatus = toolResult.isError ? "failed" : "completed";
       const toolUseResult = readClaudeToolUseResult(message);
+      const workflowScriptPath =
+        tool.toolName.toLowerCase() === "workflow"
+          ? readString(toolUseResult?.scriptPath)
+          : undefined;
+      const workflowScript = workflowScriptPath
+        ? yield* fileSystem.readFileString(workflowScriptPath).pipe(Effect.orElseSucceed(() => ""))
+        : "";
       const toolData = {
         toolName: tool.toolName,
         input: tool.input,
         result: toolResult.block,
+        ...(toolUseResult ? { toolUseResult } : {}),
+        ...(workflowScript ? { workflowScript } : {}),
       };
 
       const updatedStamp = yield* makeEventStamp();
@@ -2593,6 +2608,19 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     // authoritative per-agent data and the typed background_tasks control
     // request is the reconciliation source.
     if ((message.subtype as string) === "background_tasks_changed") {
+      const tasks = (message as unknown as { tasks?: unknown }).tasks;
+      if (Array.isArray(tasks)) {
+        yield* offerRuntimeEvent({
+          ...base,
+          type: "task.roster",
+          payload: {
+            tasks: tasks.filter(
+              (task): task is Record<string, unknown> =>
+                task !== null && typeof task === "object" && !Array.isArray(task),
+            ),
+          },
+        });
+      }
       return;
     }
 
@@ -2684,10 +2712,20 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
             taskId: RuntimeTaskId.make(message.task_id),
             description: message.description,
             ...(message.task_type ? { taskType: message.task_type } : {}),
+            ...(message.tool_use_id ? { toolUseId: message.tool_use_id } : {}),
+            ...(message.subagent_type ? { subagentType: message.subagent_type } : {}),
+            ...(message.workflow_name ? { workflowName: message.workflow_name } : {}),
+            ...(message.prompt ? { prompt: message.prompt } : {}),
           },
         });
         return;
-      case "task_progress":
+      case "task_progress": {
+        const workflowProgress = (
+          message as unknown as { readonly workflow_progress?: ReadonlyArray<unknown> }
+        ).workflow_progress?.filter(
+          (entry): entry is Record<string, unknown> =>
+            entry !== null && typeof entry === "object" && !Array.isArray(entry),
+        );
         yield* emitThreadTokenUsage(
           context,
           normalizeClaudeTaskProgressTokenUsage(message.usage, context),
@@ -2705,13 +2743,24 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
             ...(message.summary ? { summary: message.summary } : {}),
             ...(message.usage ? { usage: message.usage } : {}),
             ...(message.last_tool_name ? { lastToolName: message.last_tool_name } : {}),
+            ...(message.tool_use_id ? { toolUseId: message.tool_use_id } : {}),
+            ...(message.subagent_type ? { subagentType: message.subagent_type } : {}),
+            ...(workflowProgress && workflowProgress.length > 0 ? { workflowProgress } : {}),
           },
         });
         return;
-      // Task state patch (status/backgrounded/end_time). No runtime mapping
-      // yet — the terminal task_notification reports the outcome — but it
-      // must not surface as an unknown-subtype warning row.
+      }
+      // Task state patch (status/backgrounded/end_time). The terminal
+      // task_notification still carries the final summary and usage.
       case "task_updated":
+        yield* offerRuntimeEvent({
+          ...base,
+          type: "task.updated",
+          payload: {
+            taskId: RuntimeTaskId.make(message.task_id),
+            patch: message.patch,
+          },
+        });
         return;
       case "task_notification":
         yield* emitThreadTokenUsage(
@@ -2730,6 +2779,8 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
             status: message.status,
             ...(message.summary ? { summary: message.summary } : {}),
             ...(message.usage ? { usage: message.usage } : {}),
+            ...(message.tool_use_id ? { toolUseId: message.tool_use_id } : {}),
+            ...(message.output_file ? { outputFile: message.output_file } : {}),
           },
         });
         return;
@@ -3539,6 +3590,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         ...(existingResumeSessionId ? { resume: existingResumeSessionId } : {}),
         ...(newSessionId ? { sessionId: newSessionId } : {}),
         includePartialMessages: true,
+        agentProgressSummaries: true,
         canUseTool,
         env: claudeEnvironment,
         ...(input.cwd ? { additionalDirectories: [input.cwd] } : {}),
@@ -3829,6 +3881,29 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     },
   );
 
+  const stopTask: NonNullable<ClaudeAdapterShape["stopTask"]> = Effect.fn("stopTask")(
+    function* (threadId, taskId) {
+      const context = yield* requireSession(threadId);
+      if (!context.query.stopTask) {
+        return yield* new ProviderAdapterRequestError({
+          provider: PROVIDER,
+          method: "task/stop",
+          detail: "The installed Claude Agent SDK does not expose stopTask().",
+        });
+      }
+      yield* Effect.tryPromise({
+        try: () => context.query.stopTask?.(taskId) ?? Promise.resolve(),
+        catch: (cause) =>
+          new ProviderAdapterRequestError({
+            provider: PROVIDER,
+            method: "task/stop",
+            detail: `Failed to stop Claude task '${taskId}'.`,
+            cause,
+          }),
+      });
+    },
+  );
+
   const readThread: ClaudeAdapterShape["readThread"] = Effect.fn("readThread")(
     function* (threadId) {
       const context = yield* requireSession(threadId);
@@ -3932,6 +4007,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     startSession,
     sendTurn,
     interruptTurn,
+    stopTask,
     readThread,
     rollbackThread,
     respondToRequest,
