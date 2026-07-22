@@ -67,7 +67,7 @@ describe("findLiveForkSourceProject", () => {
 });
 
 describe("buildLiveForkMergeRepairPrompt", () => {
-  it("includes the repository, conflict context, safety boundaries, and Live Thread identity", () => {
+  it("limits conflict repair to the reported files and Git-only completion proof", () => {
     const prompt = buildLiveForkMergeRepairPrompt({
       workspaceRoot: "/Users/example/t3code",
       installedVersion: "0.0.29-nightly.1",
@@ -89,10 +89,14 @@ describe("buildLiveForkMergeRepairPrompt", () => {
     expect(prompt).toContain("ChatComposer.tsx");
     expect(prompt).toContain("Live Thread, its real-time agent/right-panel integration");
     expect(prompt).toContain("Upstream T3 Code is the source of truth");
-    expect(prompt).toContain("Do not assume there is a merge conflict");
+    expect(prompt).toContain("inspect only the reported conflicted files");
     expect(prompt).toContain("Retain upstream's current implementation");
-    expect(prompt).toContain("finish the merge commit");
-    expect(prompt).toContain("Never push, open a PR, publish, build, install");
+    expect(prompt).toContain("finish the existing merge with hooks disabled");
+    expect(prompt).toContain("Do not run lint, formatting, typecheck, tests, builds");
+    expect(prompt).toContain("Do not run code-quality or runtime checks");
+    expect(prompt).not.toContain("./node_modules/.bin/vp check");
+    expect(prompt).not.toContain("concurrency-limit");
+    expect(prompt).not.toContain("broader tests");
     expect(prompt).toContain("use the T3 Code Live power button once");
     expect(prompt).toContain(LIVE_FORK_UPDATE_READY_MARKER);
     expect(prompt).toContain(LIVE_FORK_UPDATE_BLOCKED_MARKER);
@@ -118,8 +122,8 @@ describe("buildLiveForkMergeRepairPrompt", () => {
 
     expect(prompt).toContain("uncommitted local fork changes; no merge has started");
     expect(prompt).toContain("None reported. Do not assume that a merge is active.");
-    expect(prompt).toContain("cohesive, verified set of Live Thread/updater changes");
-    expect(prompt).toContain("merge `upstream/main` normally");
+    expect(prompt).toContain("inspect only the blocking files");
+    expect(prompt).toContain("git merge --no-edit upstream/main");
     expect(prompt).not.toContain("Resolve the existing upstream merge conflicts");
   });
 });
