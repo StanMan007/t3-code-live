@@ -1966,7 +1966,10 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
       if (!candidateStat || candidateStat.type !== "Directory") continue;
 
       const to = path.join(options.outputDir, candidate.name);
-      yield* fs.copy(candidate.source, to);
+      yield* runCommand(ChildProcess.make("ditto", [candidate.source, to]), {
+        label: `ditto ${candidate.source} ${to}`,
+        verbose: options.verbose,
+      });
       copiedArtifacts.push(to);
     }
   }

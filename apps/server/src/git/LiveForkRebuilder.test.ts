@@ -75,6 +75,7 @@ describe("LiveForkRebuilder", () => {
       ]);
       assert.match(spawned.args[1] ?? "", /dist:desktop:dir:arm64/u);
       assert.match(spawned.args[1] ?? "", /--output-dir/u);
+      assert.notMatch(spawned.args[1] ?? "", /dir:arm64 -- --output-dir/u);
       assert.notMatch(spawned.args[1] ?? "", /hdiutil/u);
       assert.match(spawned.args[1] ?? "", /com\.stanman\.t3codelive/u);
       assert.match(spawned.args[1] ?? "", /T3CODE_DESKTOP_ASSET_BRAND='nightly'/u);

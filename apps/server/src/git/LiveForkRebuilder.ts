@@ -120,7 +120,7 @@ T3CODE_DESKTOP_APP_ID='com.stanman.t3codelive' \
 T3CODE_DESKTOP_PRODUCT_NAME='T3 Code Live (Nightly)' \
 T3CODE_DESKTOP_ASSET_BRAND='nightly' \
 T3CODE_DESKTOP_LOCAL_SIGN_IDENTITY='Apple Development: Jonathan Stanley (P8U8347VLY)' \
-  ./node_modules/.bin/vp run dist:desktop:dir:arm64 -- --output-dir "$local_output_dir"
+  ./node_modules/.bin/vp run dist:desktop:dir:arm64 --output-dir "$local_output_dir"
 
 source_app="$local_output_dir/T3 Code Live (Nightly).app"
 if [ ! -d "$source_app" ]; then
