@@ -19,7 +19,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { APP_BASE_NAME, APP_VERSION } from "../../branding";
-import { useProjects, useThread, useThreadMessages } from "../../state/entities";
+import { useProjects, useThread, useThreadMessages, useThreadShells } from "../../state/entities";
 import { usePrimaryEnvironment } from "../../state/environments";
 import { liveForkUpdateEnvironment } from "../../state/liveForkUpdate";
 import { primaryServerProvidersAtom } from "../../state/server";
@@ -38,6 +38,8 @@ import {
   resolveForkRepairAgentLifecycle,
   type ForkUpdatePillPhase,
 } from "./SidebarForkSourceUpdatePill.logic";
+import { countActiveTasksForRestart } from "./SidebarLiveRebuild.logic";
+import { SidebarLiveRebuildConfirmation } from "./SidebarLiveRebuildConfirmation";
 
 const CHECK_INTERVAL_MS = 15 * 60_000;
 
@@ -56,6 +58,7 @@ export function SidebarForkSourceUpdatePill() {
   const navigate = useNavigate();
   const primaryEnvironment = usePrimaryEnvironment();
   const projects = useProjects();
+  const threadShells = useThreadShells();
   const providers = useAtomValue(primaryServerProvidersAtom);
   const checkUpdate = useAtomCommand(liveForkUpdateEnvironment.check, { reportFailure: false });
   const mergeUpdate = useAtomCommand(liveForkUpdateEnvironment.merge, { reportFailure: false });
@@ -67,9 +70,11 @@ export function SidebarForkSourceUpdatePill() {
   const [phase, setPhase] = useState<ForkUpdatePillPhase>("idle");
   const [dismissedSha, setDismissedSha] = useState<string | null>(null);
   const [repairThreadRef, setRepairThreadRef] = useState<ScopedThreadRef | null>(null);
+  const [restartConfirmationOpen, setRestartConfirmationOpen] = useState(false);
   const completionToastShownRef = useRef(false);
   const repairThread = useThread(repairThreadRef);
   const repairMessages = useThreadMessages(repairThreadRef);
+  const activeTaskCount = useMemo(() => countActiveTasksForRestart(threadShells), [threadShells]);
   const sourceProject = useMemo(
     () => findLiveForkSourceProject(projects, primaryEnvironment?.environmentId ?? null),
     [primaryEnvironment?.environmentId, projects],
@@ -153,6 +158,14 @@ export function SidebarForkSourceUpdatePill() {
     }
   }, [phase, rebuildApp, sourceProject]);
 
+  const requestLiveRebuild = useCallback(() => {
+    if (activeTaskCount > 0) {
+      setRestartConfirmationOpen(true);
+      return;
+    }
+    void startLiveRebuild();
+  }, [activeTaskCount, startLiveRebuild]);
+
   useEffect(() => {
     if (phase !== "agent_working" || !sourceProject || repairAgentLifecycle === "working") {
       return;
@@ -198,11 +211,11 @@ export function SidebarForkSourceUpdatePill() {
         timeout: 0,
         actionProps: {
           children: "Restart to apply",
-          onClick: () => void startLiveRebuild(),
+          onClick: requestLiveRebuild,
         },
       }),
     );
-  }, [phase, result?.status, startLiveRebuild]);
+  }, [phase, requestLiveRebuild, result?.status]);
 
   const launchRepairAgent = useCallback(async () => {
     if (!sourceProject || !result || !updaterModelSelection || phase !== "idle") return;
@@ -362,74 +375,85 @@ export function SidebarForkSourceUpdatePill() {
         params: repairThreadRef,
       });
     } else if (view.action === "rebuild") {
-      void startLiveRebuild();
+      requestLiveRebuild();
     }
   };
 
   return (
-    <div
-      className={`group/fork-update relative flex h-7 w-full items-center overflow-hidden rounded-lg text-xs font-medium transition-colors ${TONE_STYLES[view.tone]}`}
-    >
-      <Tooltip>
-        <TooltipTrigger
-          render={
-            <button
-              type="button"
-              aria-label={view.description}
-              disabled={disabled}
-              className="fork-update-main relative flex h-full flex-1 items-center gap-2 px-2 text-left disabled:cursor-default"
-              onClick={handleAction}
-            >
-              {view.busy ? (
-                <LoaderIcon className="size-3.5 animate-spin" />
-              ) : view.action === "agent" || view.action === "open_agent" ? (
-                <BotIcon className="size-3.5" />
-              ) : view.action === "rebuild" ? (
-                <PowerIcon className="size-3.5" />
-              ) : view.tone === "success" ? (
-                <CircleCheckIcon className="size-3.5" />
-              ) : view.action === "check" ? (
-                <RefreshCwIcon className="size-3.5" />
-              ) : (
-                <DownloadIcon className="size-3.5" />
-              )}
-              <span className="min-w-0 truncate">
-                {agentUnavailable ? "GPT-5.6-Sol unavailable" : view.title}
-              </span>
-              {!agentUnavailable && view.trailingLabel ? (
-                <span
-                  aria-hidden="true"
-                  className="ml-auto shrink-0 text-[11px] font-normal tabular-nums opacity-70"
-                >
-                  {view.trailingLabel}
-                </span>
-              ) : null}
-            </button>
-          }
-        />
-        <TooltipPopup side="top">
-          {agentUnavailable
-            ? "Enable GPT-5.6-Sol with High reasoning before starting the merge agent."
-            : view.description}
-        </TooltipPopup>
-      </Tooltip>
-      {view.dismissible && result?.upstreamSha ? (
+    <>
+      <div
+        className={`group/fork-update relative flex h-7 w-full items-center overflow-hidden rounded-lg text-xs font-medium transition-colors ${TONE_STYLES[view.tone]}`}
+      >
         <Tooltip>
           <TooltipTrigger
             render={
               <button
                 type="button"
-                aria-label="Dismiss fork update notice"
-                className="mr-1 inline-flex size-5 items-center justify-center rounded-md opacity-60 transition-opacity hover:opacity-100"
-                onClick={() => setDismissedSha(result.upstreamSha)}
+                aria-label={view.description}
+                disabled={disabled}
+                className="fork-update-main relative flex h-full flex-1 items-center gap-2 px-2 text-left disabled:cursor-default"
+                onClick={handleAction}
               >
-                <XIcon className="size-3.5" />
+                {view.busy ? (
+                  <LoaderIcon className="size-3.5 animate-spin" />
+                ) : view.action === "agent" || view.action === "open_agent" ? (
+                  <BotIcon className="size-3.5" />
+                ) : view.action === "rebuild" ? (
+                  <PowerIcon className="size-3.5" />
+                ) : view.tone === "success" ? (
+                  <CircleCheckIcon className="size-3.5" />
+                ) : view.action === "check" ? (
+                  <RefreshCwIcon className="size-3.5" />
+                ) : (
+                  <DownloadIcon className="size-3.5" />
+                )}
+                <span className="min-w-0 truncate">
+                  {agentUnavailable ? "GPT-5.6-Sol unavailable" : view.title}
+                </span>
+                {!agentUnavailable && view.trailingLabel ? (
+                  <span
+                    aria-hidden="true"
+                    className="ml-auto shrink-0 text-[11px] font-normal tabular-nums opacity-70"
+                  >
+                    {view.trailingLabel}
+                  </span>
+                ) : null}
               </button>
             }
           />
-          <TooltipPopup side="top">Dismiss until another upstream commit arrives</TooltipPopup>
+          <TooltipPopup side="top">
+            {agentUnavailable
+              ? "Enable GPT-5.6-Sol with High reasoning before starting the merge agent."
+              : view.description}
+          </TooltipPopup>
         </Tooltip>
-      ) : null}
-    </div>
+        {view.dismissible && result?.upstreamSha ? (
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <button
+                  type="button"
+                  aria-label="Dismiss fork update notice"
+                  className="mr-1 inline-flex size-5 items-center justify-center rounded-md opacity-60 transition-opacity hover:opacity-100"
+                  onClick={() => setDismissedSha(result.upstreamSha)}
+                >
+                  <XIcon className="size-3.5" />
+                </button>
+              }
+            />
+            <TooltipPopup side="top">Dismiss until another upstream commit arrives</TooltipPopup>
+          </Tooltip>
+        ) : null}
+      </div>
+      <SidebarLiveRebuildConfirmation
+        activeTaskCount={activeTaskCount}
+        open={restartConfirmationOpen}
+        onCancel={() => setRestartConfirmationOpen(false)}
+        onConfirm={() => {
+          setRestartConfirmationOpen(false);
+          void startLiveRebuild();
+        }}
+      />
+    </>
   );
 }

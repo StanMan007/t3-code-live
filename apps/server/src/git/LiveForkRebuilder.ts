@@ -31,6 +31,7 @@ local_output_dir=""
 stage_app=""
 backup_app=""
 target_app="/Applications/T3 Code Live (Nightly).app"
+app_executable="$target_app/Contents/MacOS/T3 Code Live (Nightly)"
 installed=0
 
 mkdir -p "$log_dir"
@@ -81,7 +82,7 @@ cleanup() {
   fi
   if [ "$installed" -eq 0 ] && [ -n "$backup_app" ] && [ -d "$backup_app" ] && [ ! -e "$target_app" ]; then
     mv "$backup_app" "$target_app" || true
-    open "$target_app" || true
+    open -n "$target_app" || true
   fi
   if [ -n "$stage_app" ] && [ -d "$stage_app" ]; then
     mv "$stage_app" "${"$"}{TMPDIR:-/tmp}/T3 Code Live failed-stage-$$.app" || true
@@ -146,13 +147,21 @@ if [ "$(git rev-parse origin/main)" != "$source_sha" ]; then
   exit 75
 fi
 
+is_app_running() {
+  ps -axo command= | grep -Fqx "$app_executable"
+}
+
 osascript -e 'tell application id "com.stanman.t3codelive" to quit' || true
 for _ in {1..80}; do
-  if ! pgrep -f '/Applications/T3 Code Live \(Nightly\)\.app/Contents/MacOS/T3 Code Live \(Nightly\)' >/dev/null; then
+  if ! is_app_running; then
     break
   fi
   sleep 0.25
 done
+if is_app_running; then
+  printf 'T3 Code Live did not quit in time. The running app was left unchanged.\n'
+  exit 75
+fi
 
 backup_app="${"$"}{TMPDIR:-/tmp}/T3 Code Live (Nightly).app.previous-$$"
 if [ -d "$target_app" ]; then
@@ -161,11 +170,45 @@ fi
 mv "$stage_app" "$target_app"
 stage_app=""
 installed=1
+reopened=0
+for attempt in 1 2 3; do
+  printf 'Opening rebuilt T3 Code Live (attempt %s of 3).\n' "$attempt"
+  open -n "$target_app" || true
+  for _ in {1..40}; do
+    if is_app_running; then
+      reopened=1
+      break
+    fi
+    sleep 0.25
+  done
+  if [ "$reopened" -eq 1 ]; then
+    break
+  fi
+done
+if [ "$reopened" -ne 1 ]; then
+  printf 'LaunchServices could not reopen the rebuilt app; trying its executable directly.\n'
+  nohup "$app_executable" >/dev/null 2>&1 &
+  for _ in {1..40}; do
+    if is_app_running; then
+      reopened=1
+      break
+    fi
+    sleep 0.25
+  done
+fi
+if [ "$reopened" -ne 1 ]; then
+  failed_app="${"$"}{TMPDIR:-/tmp}/T3 Code Live failed-launch-$$.app"
+  mv "$target_app" "$failed_app"
+  mv "$backup_app" "$target_app"
+  backup_app=""
+  open -n "$target_app" || true
+  printf 'The rebuilt app could not be reopened. The previous app was restored and a relaunch was requested. Failed bundle: %s\n' "$failed_app"
+  exit 70
+fi
 if ! git update-ref refs/t3-code-live/installed "$source_sha"; then
   printf 'Warning: the installed-source marker could not be updated.\n'
 fi
-open "$target_app"
-printf '[%s] Rebuild installed; T3 Code Live (Nightly) reopened. Previous bundle: %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$backup_app"
+printf '[%s] Rebuild installed and verified running; T3 Code Live (Nightly) reopened. Previous bundle: %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$backup_app"
 `;
 
 function rebuildError(cwd: string, detail: string, cause?: unknown): LiveForkRebuildError {

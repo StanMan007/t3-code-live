@@ -85,6 +85,12 @@ describe("LiveForkRebuilder", () => {
       assert.match(spawned.args[1] ?? "", /cannot rebuild from a dirty working tree/u);
       assert.match(spawned.args[1] ?? "", /origin\/main changed during the rebuild/u);
       assert.match(spawned.args[1] ?? "", /refs\/t3-code-live\/installed/u);
+      assert.match(spawned.args[1] ?? "", /open -n "\$target_app"/u);
+      assert.match(spawned.args[1] ?? "", /attempt %s of 3/u);
+      assert.match(spawned.args[1] ?? "", /verified running/u);
+      assert.match(spawned.args[1] ?? "", /did not quit in time/u);
+      assert.match(spawned.args[1] ?? "", /trying its executable directly/u);
+      assert.match(spawned.args[1] ?? "", /previous app was restored/u);
       assert.equal(didUnref, true);
     }).pipe(
       Effect.provide(
