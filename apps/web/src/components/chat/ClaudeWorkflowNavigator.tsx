@@ -564,7 +564,7 @@ export const ClaudeWorkflowNavigator = memo(function ClaudeWorkflowNavigator(pro
   return (
     <div
       ref={navigatorRef}
-      className="pointer-events-auto relative mx-auto mt-1.5 w-full max-w-3xl px-1"
+      className="pointer-events-auto relative mx-auto mt-1.5 mb-2 w-full max-w-3xl px-1"
     >
       {expanded ? (
         <WorkflowPanel
@@ -589,7 +589,7 @@ export const ClaudeWorkflowNavigator = memo(function ClaudeWorkflowNavigator(pro
 
       <div
         data-claude-workflow-navigator="true"
-        className="flex h-9 items-center gap-2 rounded-xl border border-white/[0.07] bg-[#171717]/92 px-2.5 shadow-lg shadow-black/15 backdrop-blur-md"
+        className="flex h-9 items-center gap-2 rounded-xl bg-[#171717]/92 px-2.5 shadow-lg shadow-black/15 backdrop-blur-md"
       >
         <button
           type="button"
