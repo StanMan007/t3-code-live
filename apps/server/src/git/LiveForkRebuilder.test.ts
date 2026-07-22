@@ -85,6 +85,16 @@ describe("LiveForkRebuilder", () => {
       assert.match(spawned.args[1] ?? "", /cannot rebuild from a dirty working tree/u);
       assert.match(spawned.args[1] ?? "", /origin\/main changed during the rebuild/u);
       assert.match(spawned.args[1] ?? "", /refs\/t3-code-live\/installed/u);
+      assert.match(spawned.args[1] ?? "", /Using fast renderer refresh/u);
+      assert.match(spawned.args[1] ?? "", /git diff --name-only/u);
+      assert.match(spawned.args[1] ?? "", /apps\/web\/\*/u);
+      assert.match(spawned.args[1] ?? "", /vp run --filter t3 build/u);
+      assert.match(spawned.args[1] ?? "", /apply-web-brand-assets\.ts nightly/u);
+      assert.match(spawned.args[1] ?? "", /cp -cR "\$target_app" "\$source_app"/u);
+      assert.match(spawned.args[1] ?? "", /codesign -d --entitlements :-/u);
+      assert.match(spawned.args[1] ?? "", /--entitlements "\$entitlements_path"/u);
+      assert.match(spawned.args[1] ?? "", /codesign --force --sign/u);
+      assert.match(spawned.args[1] ?? "", /Using full desktop rebuild/u);
       assert.match(spawned.args[1] ?? "", /open -n "\$target_app"/u);
       assert.match(spawned.args[1] ?? "", /attempt %s of 3/u);
       assert.match(spawned.args[1] ?? "", /verified running/u);

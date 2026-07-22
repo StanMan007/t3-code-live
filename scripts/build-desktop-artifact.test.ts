@@ -551,6 +551,10 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
 
       const mac = config.mac as Record<string, unknown>;
       assert.deepStrictEqual(mac.target, ["dir"]);
+      assert.deepStrictEqual(config.asarUnpack, [
+        ...DESKTOP_ASAR_UNPACK,
+        "apps/server/dist/**",
+      ]);
     }).pipe(Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} })))),
   );
 
@@ -570,6 +574,11 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       assert.equal(win.icon, "icon.ico");
       assert.equal(win.signAndEditExecutable, true);
       assert.notProperty(win, "azureSignOptions");
+      assert.deepStrictEqual(config.asarUnpack, [
+        ...DESKTOP_ASAR_UNPACK,
+        "apps/server/dist/**",
+        "**/node_modules/**",
+      ]);
     }).pipe(Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} })))),
   );
 

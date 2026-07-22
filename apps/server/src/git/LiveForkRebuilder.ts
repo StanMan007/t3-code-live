@@ -40,6 +40,7 @@ status_file="$HOME/Library/Application Support/T3 Code Live Updater/rebuild-stat
 installed=0
 source_sha=""
 rebuild_stage="building"
+build_mode="full"
 
 write_status() {
   mkdir -p "${"$"}{status_file%/*}"
@@ -134,13 +135,55 @@ if ! git merge-base --is-ancestor upstream/main "$source_sha"; then
   exit 65
 fi
 local_output_dir="$(mktemp -d "${"$"}{TMPDIR:-/tmp}/t3-code-live-output.XXXXXX")"
-T3CODE_DESKTOP_APP_ID='com.stanman.t3codelive' \
-T3CODE_DESKTOP_PRODUCT_NAME='T3 Code Live (Nightly)' \
-T3CODE_DESKTOP_ASSET_BRAND='nightly' \
-T3CODE_DESKTOP_LOCAL_SIGN_IDENTITY='Apple Development: Jonathan Stanley (P8U8347VLY)' \
-  ./node_modules/.bin/vp run dist:desktop:dir:arm64 --output-dir "$local_output_dir"
-
 source_app="$local_output_dir/T3 Code Live (Nightly).app"
+installed_sha="$(git rev-parse --verify refs/t3-code-live/installed 2>/dev/null || true)"
+if [ -n "$installed_sha" ] \
+  && git merge-base --is-ancestor "$installed_sha" "$source_sha" \
+  && [ -d "$target_app/Contents/Resources/app.asar.unpacked/apps/server/dist/client" ] \
+  && [ "$(plutil -extract CFBundleIdentifier raw "$target_app/Contents/Info.plist" 2>/dev/null || true)" = 'com.stanman.t3codelive' ] \
+  && codesign --verify --deep --strict "$target_app"; then
+  build_mode="renderer"
+  while IFS= read -r changed_path; do
+    case "$changed_path" in
+      apps/web/*) ;;
+      *) build_mode="full"; break ;;
+    esac
+  done <<EOF
+$(git diff --name-only "$installed_sha..$source_sha")
+EOF
+fi
+
+if [ "$build_mode" = "renderer" ]; then
+  entitlements_path="$local_output_dir/source-entitlements.plist"
+  if ! codesign -d --entitlements :- "$target_app" >"$entitlements_path" 2>/dev/null \
+    || ! plutil -lint "$entitlements_path" >/dev/null; then
+    printf 'The installed app entitlements could not be preserved; falling back to a full rebuild.\n'
+    build_mode="full"
+  fi
+fi
+
+if [ "$build_mode" = "renderer" ]; then
+  printf 'Using fast renderer refresh; Electron packaging is unchanged.\n'
+  write_status building "Building a fast renderer-only update for $source_sha."
+  ./node_modules/.bin/vp run --filter t3 build
+  node scripts/apply-web-brand-assets.ts nightly apps/server/dist/client
+  cp -cR "$target_app" "$source_app"
+  previous_client="$local_output_dir/client.previous"
+  mv "$source_app/Contents/Resources/app.asar.unpacked/apps/server/dist/client" "$previous_client"
+  cp -cR apps/server/dist/client "$source_app/Contents/Resources/app.asar.unpacked/apps/server/dist/client"
+  codesign --force --sign 'Apple Development: Jonathan Stanley (P8U8347VLY)' \
+    --timestamp=none \
+    --entitlements "$entitlements_path" \
+    "$source_app"
+else
+  printf 'Using full desktop rebuild because this update changes packaged runtime files.\n'
+  T3CODE_DESKTOP_APP_ID='com.stanman.t3codelive' \
+  T3CODE_DESKTOP_PRODUCT_NAME='T3 Code Live (Nightly)' \
+  T3CODE_DESKTOP_ASSET_BRAND='nightly' \
+  T3CODE_DESKTOP_LOCAL_SIGN_IDENTITY='Apple Development: Jonathan Stanley (P8U8347VLY)' \
+    ./node_modules/.bin/vp run dist:desktop:dir:arm64 --output-dir "$local_output_dir"
+fi
+
 if [ ! -d "$source_app" ]; then
   printf 'The rebuilt application bundle could not be located.\n'
   exit 66
@@ -152,7 +195,7 @@ fi
 codesign --verify --deep --strict "$source_app"
 
 rebuild_stage="installing"
-write_status installing "The signed replacement is ready; preparing installation."
+write_status installing "The signed $build_mode replacement is ready; preparing installation."
 stage_app="/Applications/.T3 Code Live (Nightly).app.new-$$"
 ditto "$source_app" "$stage_app"
 codesign --verify --deep --strict "$stage_app"
@@ -230,7 +273,7 @@ if ! git update-ref refs/t3-code-live/installed "$source_sha"; then
   printf 'Warning: the installed-source marker could not be updated.\n'
 fi
 write_status complete "T3 Code Live was installed and verified running."
-printf '[%s] Rebuild installed and verified running; T3 Code Live (Nightly) reopened. Previous bundle: %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$backup_app"
+printf '[%s] %s rebuild installed and verified running; T3 Code Live (Nightly) reopened. Previous bundle: %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$build_mode" "$backup_app"
 `;
 
 export const DEV_SCRIPT = String.raw`set -euo pipefail
