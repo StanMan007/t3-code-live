@@ -154,7 +154,9 @@ const make = Effect.fn("desktop.environment.make")(function* (
   const homeDirectory = input.homeDirectory;
   const devServerUrl = config.devServerUrl;
   const isDevelopment = Option.isSome(devServerUrl);
-  const packagedProductName = input.isPackaged ? input.appName?.trim() : undefined;
+  const packagedProductName = input.isPackaged
+    ? input.appName?.trim()
+    : Option.getOrUndefined(config.productNameOverride);
   const defaultBranding = resolveDesktopAppBranding({
     isDevelopment,
     appVersion: input.appVersion,

@@ -2,12 +2,17 @@ import type { LiveForkUpdateResult } from "@t3tools/contracts";
 
 import {
   LIVE_FORK_UPDATE_BLOCKED_MARKER,
+  LIVE_FORK_UPDATE_DECISION_REQUIRED_MARKER,
   LIVE_FORK_UPDATE_READY_MARKER,
 } from "../settings/forkSourceUpdate.logic";
 
-export { LIVE_FORK_UPDATE_BLOCKED_MARKER, LIVE_FORK_UPDATE_READY_MARKER };
+export {
+  LIVE_FORK_UPDATE_BLOCKED_MARKER,
+  LIVE_FORK_UPDATE_DECISION_REQUIRED_MARKER,
+  LIVE_FORK_UPDATE_READY_MARKER,
+};
 
-export type ForkRepairAgentLifecycle = "working" | "ready" | "review";
+export type ForkRepairAgentLifecycle = "working" | "ready" | "decision" | "review";
 
 export type ForkUpdatePillPhase =
   | "idle"
@@ -16,6 +21,7 @@ export type ForkUpdatePillPhase =
   | "launching_agent"
   | "agent_working"
   | "verifying_agent"
+  | "agent_decision"
   | "agent_review"
   | "restart_ready"
   | "rebuilding";
@@ -94,6 +100,16 @@ export function getForkUpdatePillView(
       dismissible: false,
     };
   }
+  if (phase === "agent_decision") {
+    return {
+      tone: "warning",
+      title: "Decision needed",
+      description: "The merge agent found a product-level conflict and prepared concrete choices.",
+      action: "open_agent",
+      busy: false,
+      dismissible: false,
+    };
+  }
   if (phase === "restart_ready") {
     return {
       tone: "primary",
@@ -165,18 +181,32 @@ export function getForkUpdatePillView(
       dismissible: false,
     };
   }
-  if (result.status === "needs_agent") {
+  if (
+    result.status === "needs_agent" ||
+    result.status === "local_changes" ||
+    result.status === "merge_conflict" ||
+    result.status === "origin_diverged" ||
+    result.status === "decision_required"
+  ) {
     const behindLabel =
       result.upstreamAhead > 0
         ? `${result.upstreamAhead} commit${result.upstreamAhead === 1 ? "" : "s"} behind upstream.`
         : null;
     return {
       tone: "warning",
-      title: "Spin up an agent",
+      title:
+        result.status === "local_changes"
+          ? "Finish local changes"
+          : result.status === "origin_diverged"
+            ? "Reconcile GitHub changes"
+            : result.status === "decision_required"
+              ? "Decision needed"
+              : "Spin up an agent",
       ...(behindLabel ? { trailingLabel: `${result.upstreamAhead} behind` } : {}),
       description: [
         behindLabel,
-        result.detail ?? "The automatic merge needs GPT-5.6-Sol to preserve Live Thread.",
+        result.detail ??
+          "The automatic merge needs GPT-5.6-Sol to preserve registered fork features.",
       ]
         .filter((value) => value !== null)
         .join(" "),
@@ -228,6 +258,13 @@ export function resolveForkRepairAgentLifecycle(input: {
     finalAssistantMessage?.text.includes(LIVE_FORK_UPDATE_READY_MARKER) === true
   ) {
     return "ready";
+  }
+
+  if (
+    input.latestTurnState === "completed" &&
+    finalAssistantMessage?.text.includes(LIVE_FORK_UPDATE_DECISION_REQUIRED_MARKER) === true
+  ) {
+    return "decision";
   }
 
   if (

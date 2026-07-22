@@ -4,7 +4,7 @@ import { Atom } from "effect/unstable/reactivity";
 import type { EnvironmentRegistry } from "../connection/registry.ts";
 import { createAtomCommandScheduler, createEnvironmentRpcCommand } from "./runtime.ts";
 
-type LiveForkCommand = "check" | "merge" | "rebuild";
+type LiveForkCommand = "check" | "merge" | "devStart" | "rebuild" | "rebuildStatus";
 
 export function liveForkUpdateCommandKey(
   command: LiveForkCommand,
@@ -41,6 +41,18 @@ export function createLiveForkUpdateEnvironmentAtoms<R, E>(
       tag: WS_METHODS.liveForkRebuild,
       scheduler,
       concurrency: concurrency("rebuild"),
+    }),
+    devStart: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:live-fork:dev-start",
+      tag: WS_METHODS.liveForkDevStart,
+      scheduler,
+      concurrency: concurrency("devStart"),
+    }),
+    rebuildStatus: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:live-fork:rebuild-status",
+      tag: WS_METHODS.liveForkRebuildStatus,
+      scheduler,
+      concurrency: concurrency("rebuildStatus"),
     }),
   };
 }

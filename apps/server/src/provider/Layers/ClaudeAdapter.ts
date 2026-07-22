@@ -178,6 +178,13 @@ interface ClaudeTaskState {
   readonly blockedBy: Set<string>;
 }
 
+interface ClaudeWorkflowDelegatedModelAttribution {
+  readonly provider: "openai";
+  readonly toolName: "mcp__codex__codex";
+  readonly model?: string;
+  readonly reasoningEffort?: string;
+}
+
 interface ClaudeSessionContext {
   session: ProviderSession;
   readonly promptQueue: Queue.Queue<PromptQueueItem>;
@@ -195,6 +202,9 @@ interface ClaudeSessionContext {
   }>;
   readonly inFlightTools: Map<number, ToolInFlight>;
   readonly claudeTasks: Map<string, ClaudeTaskState>;
+  readonly workflowTranscriptDirs: Map<string, string>;
+  readonly workflowAgentAttributions: Map<string, ClaudeWorkflowDelegatedModelAttribution>;
+  readonly workflowAgentFinalScans: Set<string>;
   turnState: ClaudeTurnState | undefined;
   lastKnownContextWindow: number | undefined;
   lastKnownTokenUsage: ThreadTokenUsageSnapshot | undefined;
@@ -703,6 +713,57 @@ function normalizeClaudeTaskStatus(value: unknown): PlanStep["status"] {
 
 function readString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+export function extractCodexMcpAttributionFromClaudeTranscript(
+  transcript: string,
+): ClaudeWorkflowDelegatedModelAttribution | undefined {
+  const lines = transcript.split(/\r?\n/);
+  for (let lineIndex = lines.length - 1; lineIndex >= 0; lineIndex -= 1) {
+    const line = lines[lineIndex]?.trim();
+    if (!line || !line.includes('"mcp__codex__codex"')) continue;
+
+    let entry: unknown;
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      continue;
+    }
+
+    const root =
+      entry !== null && typeof entry === "object" && !Array.isArray(entry)
+        ? (entry as Record<string, unknown>)
+        : undefined;
+    const message =
+      root?.message !== null && typeof root?.message === "object" && !Array.isArray(root.message)
+        ? (root.message as Record<string, unknown>)
+        : undefined;
+    const content = Array.isArray(message?.content) ? message.content : [];
+    for (let blockIndex = content.length - 1; blockIndex >= 0; blockIndex -= 1) {
+      const value = content[blockIndex];
+      if (value === null || typeof value !== "object" || Array.isArray(value)) continue;
+      const block = value as Record<string, unknown>;
+      if (block.type !== "tool_use" || block.name !== "mcp__codex__codex") continue;
+      const input =
+        block.input !== null && typeof block.input === "object" && !Array.isArray(block.input)
+          ? (block.input as Record<string, unknown>)
+          : undefined;
+      const config =
+        input?.config !== null && typeof input?.config === "object" && !Array.isArray(input.config)
+          ? (input.config as Record<string, unknown>)
+          : undefined;
+      const model = readString(config?.model);
+      const reasoningEffort =
+        readString(config?.model_reasoning_effort) ?? readString(config?.modelReasoningEffort);
+      return {
+        provider: "openai",
+        toolName: "mcp__codex__codex",
+        ...(model ? { model } : {}),
+        ...(reasoningEffort ? { reasoningEffort } : {}),
+      };
+    }
+  }
+  return undefined;
 }
 
 function readStringArray(value: unknown): Array<string> {
@@ -1373,6 +1434,66 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       }) as ClaudeQueryRuntime);
 
   const sessions = new Map<ThreadId, ClaudeSessionContext>();
+
+  const enrichWorkflowProgressAttribution = Effect.fn("enrichWorkflowProgressAttribution")(
+    function* (
+      context: ClaudeSessionContext,
+      taskId: string,
+      progress: ReadonlyArray<Record<string, unknown>>,
+    ) {
+      const transcriptDir = context.workflowTranscriptDirs.get(taskId);
+      if (!transcriptDir) return progress;
+
+      const enriched: Array<Record<string, unknown>> = [];
+      for (const entry of progress) {
+        if (readString(entry.type) !== "workflow_agent") {
+          enriched.push(entry);
+          continue;
+        }
+
+        const agentId = readString(entry.agentId);
+        if (!agentId || !/^[a-zA-Z0-9_-]+$/.test(agentId)) {
+          enriched.push(entry);
+          continue;
+        }
+
+        let attribution = context.workflowAgentAttributions.get(agentId);
+        const lastToolName = readString(entry.lastToolName);
+        const state = readString(entry.state);
+        const terminal =
+          state === "done" || state === "completed" || state === "error" || state === "failed";
+        const shouldInspect =
+          !attribution &&
+          (lastToolName === "mcp__codex__codex" ||
+            (terminal && !context.workflowAgentFinalScans.has(agentId)));
+
+        if (shouldInspect) {
+          if (terminal) context.workflowAgentFinalScans.add(agentId);
+          const transcriptPath = path.join(transcriptDir, `agent-${agentId}.jsonl`);
+          attribution = yield* fileSystem.readFileString(transcriptPath).pipe(
+            Effect.map(extractCodexMcpAttributionFromClaudeTranscript),
+            Effect.orElseSucceed(() => undefined),
+          );
+          if (attribution) context.workflowAgentAttributions.set(agentId, attribution);
+        }
+
+        enriched.push(
+          attribution
+            ? {
+                ...entry,
+                delegatedProvider: attribution.provider,
+                delegatedVia: attribution.toolName,
+                ...(attribution.model ? { delegatedModel: attribution.model } : {}),
+                ...(attribution.reasoningEffort
+                  ? { delegatedReasoningEffort: attribution.reasoningEffort }
+                  : {}),
+              }
+            : entry,
+        );
+      }
+      return enriched;
+    },
+  );
   const runtimeEventQueue = yield* Queue.unbounded<ProviderRuntimeEvent>();
 
   const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
@@ -2369,6 +2490,13 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       const workflowScript = workflowScriptPath
         ? yield* fileSystem.readFileString(workflowScriptPath).pipe(Effect.orElseSucceed(() => ""))
         : "";
+      if (tool.toolName.toLowerCase() === "workflow") {
+        const workflowTaskId = readString(toolUseResult?.taskId);
+        const workflowTranscriptDir = readString(toolUseResult?.transcriptDir);
+        if (workflowTaskId && workflowTranscriptDir) {
+          context.workflowTranscriptDirs.set(workflowTaskId, workflowTranscriptDir);
+        }
+      }
       const toolData = {
         toolName: tool.toolName,
         input: tool.input,
@@ -2720,12 +2848,20 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         });
         return;
       case "task_progress": {
-        const workflowProgress = (
+        const rawWorkflowProgress = (
           message as unknown as { readonly workflow_progress?: ReadonlyArray<unknown> }
         ).workflow_progress?.filter(
           (entry): entry is Record<string, unknown> =>
             entry !== null && typeof entry === "object" && !Array.isArray(entry),
         );
+        const workflowProgress =
+          rawWorkflowProgress && rawWorkflowProgress.length > 0
+            ? yield* enrichWorkflowProgressAttribution(
+                context,
+                message.task_id,
+                rawWorkflowProgress,
+              )
+            : rawWorkflowProgress;
         yield* emitThreadTokenUsage(
           context,
           normalizeClaudeTaskProgressTokenUsage(message.usage, context),
@@ -3683,6 +3819,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         turns: [],
         inFlightTools,
         claudeTasks,
+        workflowTranscriptDirs: new Map(),
+        workflowAgentAttributions: new Map(),
+        workflowAgentFinalScans: new Set(),
         turnState: undefined,
         lastKnownContextWindow: initialContextWindow,
         lastKnownTokenUsage: undefined,

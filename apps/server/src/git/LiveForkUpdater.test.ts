@@ -1,4 +1,5 @@
 import { assert, describe, it } from "@effect/vitest";
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import { ChildProcessSpawner } from "effect/unstable/process";
@@ -56,6 +57,9 @@ function makeGitLayer(mode: GitMode) {
         output(mode === "staged" ? "M  staged.ts\0" : dirty ? " M local.ts\0?? notes.md\0" : ""),
       );
     }
+    if (args === "rev-parse --verify --quiet MERGE_HEAD") {
+      return Effect.succeed(output("", 1));
+    }
     if (args === "fetch --prune upstream main") return Effect.succeed(output());
     if (args === "fetch --prune origin main") return Effect.succeed(output());
     if (args === "rev-parse --short=12 upstream/main") {
@@ -100,6 +104,10 @@ function makeGitLayer(mode: GitMode) {
   };
 }
 
+function updaterLayer(gitLayer: Layer.Layer<GitVcsDriver.GitVcsDriver>) {
+  return Layer.mergeAll(gitLayer, NodeServices.layer);
+}
+
 describe("LiveForkUpdater", () => {
   it.effect("reports upstream commits without starting a merge", () => {
     const git = makeGitLayer("clean");
@@ -108,7 +116,7 @@ describe("LiveForkUpdater", () => {
       assert.equal(result.status, "available");
       assert.equal(result.upstreamAhead, 2);
       assert.equal(git.getMergeCalls(), 0);
-    }).pipe(Effect.provide(git.layer));
+    }).pipe(Effect.provide(updaterLayer(git.layer)));
   });
 
   it.effect("merges a clean upstream update without agent involvement", () => {
@@ -119,51 +127,52 @@ describe("LiveForkUpdater", () => {
       assert.equal(result.upstreamAhead, 0);
       assert.equal(git.getMergeCalls(), 1);
       assert.equal(git.getPushCalls(), 1);
-    }).pipe(Effect.provide(git.layer));
+    }).pipe(Effect.provide(updaterLayer(git.layer)));
   });
 
   it.effect("returns conflict files for the GPT-5.6-Sol fallback", () => {
     const git = makeGitLayer("conflict");
     return Effect.gen(function* () {
       const result = yield* LiveForkUpdater.merge("/repo");
-      assert.equal(result.status, "needs_agent");
+      assert.equal(result.status, "merge_conflict");
       assert.deepStrictEqual(result.conflictingFiles, ["apps/web/src/ChatComposer.tsx"]);
       assert.equal(git.getMergeCalls(), 1);
       assert.equal(git.getPushCalls(), 0);
-    }).pipe(Effect.provide(git.layer));
+    }).pipe(Effect.provide(updaterLayer(git.layer)));
   });
 
   it.effect("does not merge while changes are staged for commit", () => {
     const git = makeGitLayer("staged");
     return Effect.gen(function* () {
       const result = yield* LiveForkUpdater.merge("/repo");
-      assert.equal(result.status, "needs_agent");
+      assert.equal(result.status, "local_changes");
+      assert.deepStrictEqual(result.dirtyFiles, ["staged.ts"]);
       assert.match(result.detail ?? "", /uncommitted local changes/u);
       assert.equal(git.getMergeCalls(), 0);
       assert.equal(git.getPushCalls(), 0);
-    }).pipe(Effect.provide(git.layer));
+    }).pipe(Effect.provide(updaterLayer(git.layer)));
   });
 
   it.effect("does not merge over local changes to files upstream also touched", () => {
     const git = makeGitLayer("dirty-overlap");
     return Effect.gen(function* () {
       const result = yield* LiveForkUpdater.merge("/repo");
-      assert.equal(result.status, "needs_agent");
+      assert.equal(result.status, "local_changes");
       assert.match(result.detail ?? "", /local changes/u);
       assert.equal(git.getMergeCalls(), 0);
       assert.equal(git.getPushCalls(), 0);
-    }).pipe(Effect.provide(git.layer));
+    }).pipe(Effect.provide(updaterLayer(git.layer)));
   });
 
   it.effect("does not partially sync around non-overlapping local changes", () => {
     const git = makeGitLayer("dirty-safe");
     return Effect.gen(function* () {
       const result = yield* LiveForkUpdater.merge("/repo");
-      assert.equal(result.status, "needs_agent");
+      assert.equal(result.status, "local_changes");
       assert.match(result.detail ?? "", /uncommitted local changes/u);
       assert.equal(git.getMergeCalls(), 0);
       assert.equal(git.getPushCalls(), 0);
-    }).pipe(Effect.provide(git.layer));
+    }).pipe(Effect.provide(updaterLayer(git.layer)));
   });
 
   it.effect("pushes committed local fork work even when upstream is already current", () => {
@@ -175,17 +184,17 @@ describe("LiveForkUpdater", () => {
       assert.equal(result.status, "merged");
       assert.equal(git.getMergeCalls(), 0);
       assert.equal(git.getPushCalls(), 1);
-    }).pipe(Effect.provide(git.layer));
+    }).pipe(Effect.provide(updaterLayer(git.layer)));
   });
 
   it.effect("refuses to overwrite origin/main when the remote has unique commits", () => {
     const git = makeGitLayer("origin-ahead");
     return Effect.gen(function* () {
       const result = yield* LiveForkUpdater.merge("/repo");
-      assert.equal(result.status, "needs_agent");
+      assert.equal(result.status, "origin_diverged");
       assert.equal(git.getMergeCalls(), 0);
       assert.equal(git.getPushCalls(), 0);
-    }).pipe(Effect.provide(git.layer));
+    }).pipe(Effect.provide(updaterLayer(git.layer)));
   });
 
   it.effect("reports a retryable sync failure without rewriting history", () => {
@@ -196,6 +205,6 @@ describe("LiveForkUpdater", () => {
       assert.match(result.detail ?? "", /could not be fast-forwarded/u);
       assert.equal(git.getMergeCalls(), 1);
       assert.equal(git.getPushCalls(), 1);
-    }).pipe(Effect.provide(git.layer));
+    }).pipe(Effect.provide(updaterLayer(git.layer)));
   });
 });

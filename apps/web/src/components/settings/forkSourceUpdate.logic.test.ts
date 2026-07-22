@@ -82,6 +82,8 @@ describe("buildLiveForkMergeRepairPrompt", () => {
         upstreamAhead: 2,
         localAheadOrigin: 0,
         originAhead: 0,
+        mergeActive: true,
+        dirtyFiles: ["apps/web/src/components/chat/ChatComposer.tsx"],
         conflictingFiles: ["apps/web/src/components/chat/ChatComposer.tsx"],
         detail: "The automatic merge stopped on conflicts.",
       },
@@ -91,19 +93,23 @@ describe("buildLiveForkMergeRepairPrompt", () => {
     expect(prompt).toContain("0.0.29-nightly.1");
     expect(prompt).toContain("never rebase, reset, force-push");
     expect(prompt).toContain("ChatComposer.tsx");
-    expect(prompt).toContain("Live Thread, its real-time agent/right-panel integration");
-    expect(prompt).toContain("Upstream T3 Code is the source of truth");
-    expect(prompt).toContain("inspect only the reported conflicted files");
-    expect(prompt).toContain("Retain upstream's current implementation");
-    expect(prompt).toContain("finish the existing merge with hooks disabled");
-    expect(prompt).toContain("Do not run lint, formatting, typecheck, tests, builds");
-    expect(prompt).toContain("Do not run code-quality or runtime checks");
+    expect(prompt).toContain("Claude workflow observability");
+    expect(prompt).toContain("Upstream T3 Code is the structural baseline");
+    expect(prompt).toContain("inspect the reported conflicted files");
+    expect(prompt).toContain("Retain upstream's implementation");
+    expect(prompt).toContain("finish the existing merge");
+    expect(prompt).toContain("Do not run lint, formatting, broad typecheck/tests, builds");
+    expect(prompt).toContain("run only its listed focused test");
+    expect(prompt).toContain("expected read/watch runtime");
+    expect(prompt).toContain("Do not classify them as competing source writers");
+    expect(prompt).toContain("Expected T3 Code Dev watch/runtime processes are not a blocker");
     expect(prompt).not.toContain("./node_modules/.bin/vp check");
     expect(prompt).not.toContain("concurrency-limit");
     expect(prompt).not.toContain("broader tests");
     expect(prompt).toContain("use the T3 Code Live power button once");
     expect(prompt).toContain(LIVE_FORK_UPDATE_READY_MARKER);
     expect(prompt).toContain(LIVE_FORK_UPDATE_BLOCKED_MARKER);
+    expect(prompt).toContain("T3_CODE_LIVE_UPDATE_DECISION_REQUIRED");
     expect(prompt).toContain("Never emit the ready marker for a partial");
   });
 
@@ -112,7 +118,7 @@ describe("buildLiveForkMergeRepairPrompt", () => {
       workspaceRoot: "/Users/example/t3code",
       installedVersion: "0.0.28",
       updateResult: {
-        status: "needs_agent",
+        status: "local_changes",
         branch: "main",
         currentSha: "abc123",
         upstreamSha: "def456",
@@ -122,6 +128,8 @@ describe("buildLiveForkMergeRepairPrompt", () => {
         upstreamAhead: 18,
         localAheadOrigin: 0,
         originAhead: 0,
+        mergeActive: false,
+        dirtyFiles: ["apps/web/src/claude-workflows.ts"],
         conflictingFiles: [],
         detail:
           "The fork has local changes. An agent should preserve them before merging upstream.",
@@ -130,7 +138,8 @@ describe("buildLiveForkMergeRepairPrompt", () => {
 
     expect(prompt).toContain("uncommitted local fork changes; no merge has started");
     expect(prompt).toContain("None reported. Do not assume that a merge is active.");
-    expect(prompt).toContain("inspect only the blocking files");
+    expect(prompt).toContain("classify the reported dirty paths");
+    expect(prompt).toContain("apps/web/src/claude-workflows.ts");
     expect(prompt).toContain("git merge --no-edit upstream/main");
     expect(prompt).not.toContain("Resolve the existing upstream merge conflicts");
   });

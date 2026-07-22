@@ -1,6 +1,9 @@
 #!/bin/zsh
 set -euo pipefail
 
+# Alert-only source check. The in-app guarded updater owns merges and origin synchronization.
+# The bare cache refresh is retained for the installed LaunchAgent notification path.
+
 repo_root="${0:A:h:h}"
 cd "$repo_root"
 
@@ -28,6 +31,6 @@ upstream_ahead="${counts##*[[:space:]]}"
 echo "[$timestamp] fork=$(git rev-parse --short HEAD) upstream=$(git rev-parse --short upstream/main) local_ahead=$local_ahead upstream_ahead=$upstream_ahead"
 
 if [[ "$upstream_ahead" -gt 0 ]]; then
-  echo "T3 Code Live has $upstream_ahead incoming upstream commit(s):"
+  echo "Alert only: T3 Code Live has $upstream_ahead incoming upstream commit(s):"
   git log --oneline HEAD..upstream/main
 fi

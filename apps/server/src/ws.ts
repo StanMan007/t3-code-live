@@ -329,7 +329,9 @@ const RPC_REQUIRED_SCOPE = new Map<string, AuthEnvironmentScope>([
   [WS_METHODS.realtimeAppendSpeech, AuthOrchestrationOperateScope],
   [WS_METHODS.liveForkUpdateCheck, AuthOrchestrationReadScope],
   [WS_METHODS.liveForkUpdateMerge, AuthOrchestrationOperateScope],
+  [WS_METHODS.liveForkDevStart, AuthOrchestrationOperateScope],
   [WS_METHODS.liveForkRebuild, AuthOrchestrationOperateScope],
+  [WS_METHODS.liveForkRebuildStatus, AuthOrchestrationReadScope],
   [WS_METHODS.subscribeVcsStatus, AuthOrchestrationReadScope],
   [WS_METHODS.vcsRefreshStatus, AuthOrchestrationReadScope],
   [WS_METHODS.vcsPull, AuthOrchestrationOperateScope],
@@ -1785,6 +1787,16 @@ const makeWsRpcLayer = (
             LiveForkRebuilder.start(input.cwd).pipe(
               Effect.provideService(GitVcsDriver.GitVcsDriver, gitVcs),
             ),
+            { "rpc.aggregate": "git" },
+          ),
+        [WS_METHODS.liveForkDevStart]: (input) =>
+          observeRpcEffect(WS_METHODS.liveForkDevStart, LiveForkRebuilder.startDev(input.cwd), {
+            "rpc.aggregate": "git",
+          }),
+        [WS_METHODS.liveForkRebuildStatus]: () =>
+          observeRpcEffect(
+            WS_METHODS.liveForkRebuildStatus,
+            LiveForkRebuilder.readStatus(),
             { "rpc.aggregate": "git" },
           ),
         [WS_METHODS.subscribeVcsStatus]: (input) =>

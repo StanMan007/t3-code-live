@@ -63,6 +63,9 @@ export function SidebarForkSourceUpdatePill() {
   const checkUpdate = useAtomCommand(liveForkUpdateEnvironment.check, { reportFailure: false });
   const mergeUpdate = useAtomCommand(liveForkUpdateEnvironment.merge, { reportFailure: false });
   const rebuildApp = useAtomCommand(liveForkUpdateEnvironment.rebuild, { reportFailure: false });
+  const rebuildStatus = useAtomCommand(liveForkUpdateEnvironment.rebuildStatus, {
+    reportFailure: false,
+  });
   const createThread = useAtomCommand(threadEnvironment.create, { reportFailure: false });
   const deleteThread = useAtomCommand(threadEnvironment.delete, { reportFailure: false });
   const startThreadTurn = useAtomCommand(threadEnvironment.startTurn, { reportFailure: false });
@@ -141,6 +144,29 @@ export function SidebarForkSourceUpdatePill() {
         description:
           "The app will stay open while it builds, then replace and reopen the signed Nightly package.",
       });
+      let attempts = 0;
+      const pollStatus = async () => {
+        attempts += 1;
+        const statusResult = await rebuildStatus({
+          environmentId: sourceProject.environmentId,
+          input: { cwd: sourceProject.workspaceRoot },
+        });
+        if (statusResult._tag === "Success" && statusResult.value.state === "failed") {
+          setPhase("restart_ready");
+          toastManager.add(
+            stackedThreadToast({
+              type: "error",
+              title: "T3 Code Live rebuild failed",
+              description:
+                statusResult.value.detail ??
+                `Open ${statusResult.value.logPath} for the rebuild details.`,
+            }),
+          );
+          return;
+        }
+        if (attempts < 900) window.setTimeout(() => void pollStatus(), 1_000);
+      };
+      window.setTimeout(() => void pollStatus(), 1_000);
       return;
     }
 
@@ -156,7 +182,7 @@ export function SidebarForkSourceUpdatePill() {
         }),
       );
     }
-  }, [phase, rebuildApp, sourceProject]);
+  }, [phase, rebuildApp, rebuildStatus, sourceProject]);
 
   const requestLiveRebuild = useCallback(() => {
     if (activeTaskCount > 0) {
@@ -172,6 +198,10 @@ export function SidebarForkSourceUpdatePill() {
     }
     if (repairAgentLifecycle === "review") {
       setPhase("agent_review");
+      return;
+    }
+    if (repairAgentLifecycle === "decision") {
+      setPhase("agent_decision");
       return;
     }
 

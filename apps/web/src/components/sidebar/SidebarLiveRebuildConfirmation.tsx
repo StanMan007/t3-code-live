@@ -13,6 +13,9 @@ interface SidebarLiveRebuildConfirmationProps {
   readonly open: boolean;
   readonly onCancel: () => void;
   readonly onConfirm: () => void;
+  readonly title?: string;
+  readonly description?: string;
+  readonly confirmLabel?: string;
 }
 
 export function SidebarLiveRebuildConfirmation({
@@ -20,6 +23,9 @@ export function SidebarLiveRebuildConfirmation({
   open,
   onCancel,
   onConfirm,
+  title = "Restart while a task is running?",
+  description,
+  confirmLabel = "Restart now anyway",
 }: SidebarLiveRebuildConfirmationProps) {
   const runningTaskCopy =
     activeTaskCount === 1
@@ -35,17 +41,18 @@ export function SidebarLiveRebuildConfirmation({
     >
       <DialogPopup className="max-w-md">
         <DialogHeader>
-          <DialogTitle>Restart while a task is running?</DialogTitle>
+          <DialogTitle>{title}</DialogTitle>
           <DialogDescription>
-            {runningTaskCopy} Restarting will interrupt the active work, rebuild T3 Code Live, and
-            reopen the app when the signed update is ready.
+            {runningTaskCopy}{" "}
+            {description ??
+              "Restarting will interrupt the active work, rebuild T3 Code Live, and reopen the app when the signed update is ready."}
           </DialogDescription>
         </DialogHeader>
         <DialogFooter>
           <Button variant="outline" onClick={onCancel}>
             Keep working
           </Button>
-          <Button onClick={onConfirm}>Restart now anyway</Button>
+          <Button onClick={onConfirm}>{confirmLabel}</Button>
         </DialogFooter>
       </DialogPopup>
     </Dialog>

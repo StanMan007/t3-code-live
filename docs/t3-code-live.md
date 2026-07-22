@@ -1,6 +1,6 @@
 # T3 Code Live integration
 
-This fork adds a thread-scoped voice workbench without replacing T3 Code's thread, composer, provider, or updater behavior.
+This fork adds a thread-scoped voice workbench, Claude workflow observability, guarded source updates, and small composer styling changes without replacing T3 Code's core thread model.
 
 ## Ownership boundary
 
@@ -9,6 +9,7 @@ This fork adds a thread-scoped voice workbench without replacing T3 Code's threa
 - `realtimeBridge.ts` exchanges the offer against OpenAI's supported Realtime calls endpoint using `gpt-realtime-2.1`. It does not depend on Codex's gated experimental realtime feature or modify normal Codex thread creation.
 - A handoff enters Codex through the existing composer `onSend` callback. No parallel turn runner or shadow thread state is introduced.
 - Electron grants audio-only media permission to the trusted main renderer origin. Preview/browser partitions keep their existing deny-by-default policy.
+- `liveForkFeatures.ts` is the preservation registry for intentional fork behavior. The merge-repair prompt treats those invariants as product requirements while allowing upstream structure to remain the baseline.
 
 ## Credential lookup
 
@@ -32,24 +33,42 @@ git push origin HEAD:main
 
 The sidebar's **Check for updates** control performs this as one guarded source-sync action. It
 fetches both remotes, merges `upstream/main` when needed, and fast-forwards `origin/main`. It never
-rebases or force-pushes. If Git reports conflicts, the repair agent receives only the conflicted
-files and finishes the merge without running lint, typecheck, tests, builds, or unrelated review.
+rebases or force-pushes. If Git reports conflicts, the repair agent receives the conflicting and
+dirty file lists plus the fork feature registry. It finishes only the merge and its directly affected
+focused test. It does not run lint, broad typechecks, broad tests, builds, or unrelated review. If
+both implementations encode an incompatible product choice, the task stops with a recommended
+two-choice decision instead of silently choosing one.
 
-Source sync and app installation are intentionally separate. After source and `origin/main` match,
-the power control builds and installs that exact clean commit. This local-only path creates the
-signed unpacked `.app` directly; it does not spend time generating release DMG or ZIP archives. The rebuild records
+Source sync, local iteration, and signed installation are intentionally separate:
+
+- The lightning control opens the checkout in hot-reload mode using the existing `dev:desktop`
+  runner and the same `~/.t3-live` state. Renderer changes use Vite HMR. Desktop and server changes
+  rebuild and restart only their process. The development window keeps the T3 Code Live Nightly
+  branding so the fork-only controls remain available. It reuses the primary local task database;
+  signed-app remote connection secrets remain sealed to the signed app. The first launch still
+  performs one compile.
+- The power control is the slower install lane. It builds, signs, replaces, verifies, and reopens the
+  packaged Nightly app. Use this only when you want to prove or keep an installed `.app`.
+
+The signed local path creates the unpacked `.app` directly; it does not generate release DMG or ZIP
+archives. The rebuild records
 `refs/t3-code-live/installed`; the updater uses that local ref to distinguish “source current” from
 “installed app current.” A rebuild aborts rather than installing a stale package if `HEAD`, the
 working tree, or `origin/main` changes while packaging is in progress.
 
-The scheduled `upstream-compatibility.yml` workflow opens a compatibility PR when upstream advances. It never merges or publishes automatically. Conflicts should normally be limited to these intentional seams:
+The scheduled `upstream-compatibility.yml` workflow is an alert-only compatibility check. It reports
+incoming commits and fails visibly when upstream advances; it cannot write repository contents and
+does not open, merge, or publish a pull request. The guarded in-app updater owns source synchronization.
 
-- `apps/web/src/components/chat/ChatComposer.tsx`
-- `apps/server/src/provider/realtimeBridge.ts`
-- `apps/server/src/ws.ts`
-- `packages/contracts/src/rpc.ts`
-- `apps/desktop/src/window/DesktopWindow.ts`
-- `scripts/build-desktop-artifact.ts`
+The preservation registry currently covers these intentional feature areas:
+
+- Live Thread voice handoff
+- guarded source update and local runtime controls
+- Claude dynamic workflow observability
+- composer surface styling
+
+See `apps/web/src/components/settings/liveForkFeatures.ts` for the exact invariants, entry points, and
+focused tests sent to the repair agent.
 
 ## Side-by-side Nightly build
 
@@ -71,7 +90,7 @@ signatures can make Keychain treat each rebuilt binary as a new requester.
 stable across local rebuilds. CI release signing remains on the existing
 `--signed` path and is unaffected.
 
-`T3CODE_DESKTOP_UPDATE_REPOSITORY` can point the packaged fork at its own GitHub release feed. When it is unset, local packages contain no update feed and cannot accidentally replace the integration with an official upstream binary. Upstream changes arrive through the compatibility PR workflow, where the fork's full gate runs before a new package is built.
+`T3CODE_DESKTOP_UPDATE_REPOSITORY` can point the packaged fork at its own GitHub release feed. When it is unset, local packages contain no update feed and cannot accidentally replace the integration with an official upstream binary. Upstream changes arrive through the guarded source updater; the scheduled workflow is only a notification backstop.
 
 ## Acceptance gate
 

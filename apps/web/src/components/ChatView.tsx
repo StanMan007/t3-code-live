@@ -207,6 +207,8 @@ import {
 import { environmentShell } from "../state/shell";
 import { ChatComposer, type ChatComposerHandle } from "./chat/ChatComposer";
 import { ClaudeWorkflowNavigator } from "./chat/ClaudeWorkflowNavigator";
+import { deriveClaudeWorkflowRuns } from "../claude-workflows";
+import { requestClaudeWorkflowNavigatorOpen } from "../claudeWorkflowNavigatorBus";
 import { DraftHeroHeadline } from "./chat/DraftHeroHeadline";
 import { ExpandedImageDialog } from "./chat/ExpandedImageDialog";
 import { PullRequestThreadDialog } from "./PullRequestThreadDialog";
@@ -1767,6 +1769,23 @@ function ChatViewContent(props: ChatViewProps) {
     selectedProvider: selectedProviderByThreadId,
     threadProvider,
   });
+  const openClaudeWorkflowNavigator = useCallback(() => {
+    const workflows = deriveClaudeWorkflowRuns(activeThread?.activities ?? []);
+    if (lockedProvider !== "claudeAgent" || workflows.length === 0) {
+      toastManager.add(
+        stackedThreadToast({
+          type: "info",
+          title: "No Claude workflows on this branch",
+          description:
+            lockedProvider === "claudeAgent"
+              ? "A workflow will appear here after Claude launches the Workflow tool."
+              : "Start this task with Claude to use the workflow navigator.",
+        }),
+      );
+      return;
+    }
+    requestClaudeWorkflowNavigatorOpen();
+  }, [activeThread?.activities, lockedProvider]);
   // Once a thread selects an environment, never substitute the primary
   // environment's config while the selected environment is still loading.
   const serverConfig = activeThread
@@ -4097,6 +4116,13 @@ function ChatViewContent(props: ChatViewProps) {
         ? parseStandaloneComposerSlashCommand(trimmed)
         : null;
     if (standaloneSlashCommand) {
+      if (standaloneSlashCommand === "workflows") {
+        openClaudeWorkflowNavigator();
+        promptRef.current = "";
+        clearComposerDraftContent(composerDraftTarget);
+        composerRef.current?.resetCursorState();
+        return;
+      }
       handleInteractionModeChange(standaloneSlashCommand);
       promptRef.current = "";
       clearComposerDraftContent(composerDraftTarget);
@@ -5463,6 +5489,7 @@ function ChatViewContent(props: ChatViewProps) {
                         toggleInteractionMode={toggleInteractionMode}
                         handleRuntimeModeChange={handleRuntimeModeChange}
                         handleInteractionModeChange={handleInteractionModeChange}
+                        onOpenWorkflows={openClaudeWorkflowNavigator}
                         togglePlanSidebar={togglePlanSidebar}
                         focusComposer={focusComposer}
                         scheduleComposerFocus={scheduleComposerFocus}
@@ -5472,6 +5499,7 @@ function ChatViewContent(props: ChatViewProps) {
                       {lockedProvider === "claudeAgent" ? (
                         <ClaudeWorkflowNavigator
                           activities={activeThread.activities}
+                          branch={activeThreadBranch}
                           onStopWorkflow={(taskId) => void onStopClaudeWorkflow(taskId)}
                         />
                       ) : null}

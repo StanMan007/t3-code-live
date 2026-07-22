@@ -91,6 +91,12 @@ describe("LiveForkRebuilder", () => {
       assert.match(spawned.args[1] ?? "", /did not quit in time/u);
       assert.match(spawned.args[1] ?? "", /trying its executable directly/u);
       assert.match(spawned.args[1] ?? "", /previous app was restored/u);
+      assert.match(
+        spawned.args[1] ?? "",
+        /application id "com\.stanman\.t3codelive" is running/u,
+      );
+      assert.notMatch(spawned.args[1] ?? "", /grep -Fqx "\$app_executable"/u);
+      assert.match(spawned.args[1] ?? "", /write_status complete/u);
       assert.equal(didUnref, true);
     }).pipe(
       Effect.provide(
@@ -101,6 +107,21 @@ describe("LiveForkRebuilder", () => {
           TestClock.layer(),
         ),
       ),
+    );
+  });
+
+  it("uses the existing desktop development runner for hot reload", () => {
+    assert.match(LiveForkRebuilder.DEV_SCRIPT, /scripts\/dev-runner\.ts dev:desktop/u);
+    assert.match(LiveForkRebuilder.DEV_SCRIPT, /T3CODE_DEV_INSTANCE="t3-code-live"/u);
+    assert.match(LiveForkRebuilder.DEV_SCRIPT, /T3CODE_HOME="\$HOME\/\.t3-live"/u);
+    assert.match(
+      LiveForkRebuilder.DEV_SCRIPT,
+      /T3CODE_DESKTOP_PRODUCT_NAME="T3 Code Live \(Nightly\)"/u,
+    );
+    assert.match(LiveForkRebuilder.DEV_SCRIPT, /node_modules\/\.bin:\$PATH/u);
+    assert.match(
+      LiveForkRebuilder.DEV_SCRIPT,
+      /tell application id "com\.stanman\.t3codelive" to quit/u,
     );
   });
 

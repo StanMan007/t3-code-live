@@ -20,6 +20,7 @@ import {
 import { SidebarProviderUpdatePill } from "./SidebarProviderUpdatePill";
 import { SidebarForkSourceUpdatePill } from "./SidebarForkSourceUpdatePill";
 import { SidebarLiveRebuildButton } from "./SidebarLiveRebuildButton";
+import { SidebarLiveDevButton } from "./SidebarLiveDevButton";
 import { SidebarUpdatePill } from "./SidebarUpdatePill";
 
 export const SidebarChromeHeader = memo(function SidebarChromeHeader({
@@ -124,6 +125,7 @@ export const SidebarChromeFooter = memo(function SidebarChromeFooter() {
               <SettingsIcon className="size-3.5" />
               <span className="text-xs">Settings</span>
             </SidebarMenuButton>
+            <SidebarLiveDevButton />
             <SidebarLiveRebuildButton />
           </div>
         </SidebarMenuItem>

@@ -364,6 +364,10 @@ describe("parseStandaloneComposerSlashCommand", () => {
     expect(parseStandaloneComposerSlashCommand(" /plan ")).toBe("plan");
   });
 
+  it("opens the branch workflow navigator", () => {
+    expect(parseStandaloneComposerSlashCommand(" /workflows ")).toBe("workflows");
+  });
+
   it("parses standalone /default command", () => {
     expect(parseStandaloneComposerSlashCommand("/default")).toBe("default");
   });

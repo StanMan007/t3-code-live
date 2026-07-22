@@ -1,9 +1,12 @@
 import * as NodeOS from "node:os";
+import * as FileSystem from "effect/FileSystem";
 
 import {
   type GitCommandError,
   LiveForkRebuildError,
   type LiveForkRebuildResult,
+  type LiveForkRebuildStatus,
+  type LiveForkDevStartResult,
 } from "@t3tools/contracts";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import * as Effect from "effect/Effect";
@@ -17,6 +20,7 @@ const EXPECTED_UPSTREAM_URL = "https://github.com/pingdotgg/t3code.git";
 const PRODUCT_NAME = "T3 Code Live (Nightly)";
 const APP_ID = "com.stanman.t3codelive";
 const SIGNING_IDENTITY = "Apple Development: Jonathan Stanley (P8U8347VLY)";
+const REBUILD_STATUS_PATH = `${NodeOS.homedir()}/Library/Application Support/T3 Code Live Updater/rebuild-status`;
 const isLiveForkRebuildError = Schema.is(LiveForkRebuildError);
 
 export const REBUILD_SCRIPT = String.raw`set -euo pipefail
@@ -32,11 +36,22 @@ stage_app=""
 backup_app=""
 target_app="/Applications/T3 Code Live (Nightly).app"
 app_executable="$target_app/Contents/MacOS/T3 Code Live (Nightly)"
+status_file="$HOME/Library/Application Support/T3 Code Live Updater/rebuild-status"
 installed=0
+source_sha=""
+rebuild_stage="building"
+
+write_status() {
+  mkdir -p "${"$"}{status_file%/*}"
+  status_tmp="${"$"}{status_file}.tmp.$$"
+  printf '%s\n%s\n%s\n' "$1" "$source_sha" "$2" >"$status_tmp"
+  mv "$status_tmp" "$status_file"
+}
 
 mkdir -p "$log_dir"
 exec >>"$log_path" 2>&1
 printf '\n[%s] Starting T3 Code Live rebuild from %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$repo"
+write_status building "Building local desktop assets."
 
 acquire_lock() {
   if mkdir "$lock_dir" 2>/dev/null; then
@@ -93,6 +108,7 @@ cleanup() {
   fi
   if [ "$exit_status" -ne 0 ]; then
     printf '[%s] Rebuild failed with status %s. The running app was left unchanged.\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$exit_status"
+    write_status failed "Rebuild failed during $rebuild_stage with status $exit_status. See the rebuild log for details."
   fi
   exit "$exit_status"
 }
@@ -108,6 +124,7 @@ if [ -n "$(git status --porcelain=v1)" ]; then
   exit 65
 fi
 source_sha="$(git rev-parse HEAD)"
+write_status building "Building source commit $source_sha."
 if [ "$(git rev-parse origin/main)" != "$source_sha" ]; then
   printf 'T3 Code Live cannot rebuild until local main and origin/main match.\n'
   exit 65
@@ -134,6 +151,8 @@ if [ "$(plutil -extract CFBundleIdentifier raw "$source_app/Contents/Info.plist"
 fi
 codesign --verify --deep --strict "$source_app"
 
+rebuild_stage="installing"
+write_status installing "The signed replacement is ready; preparing installation."
 stage_app="/Applications/.T3 Code Live (Nightly).app.new-$$"
 ditto "$source_app" "$stage_app"
 codesign --verify --deep --strict "$stage_app"
@@ -148,7 +167,7 @@ if [ "$(git rev-parse origin/main)" != "$source_sha" ]; then
 fi
 
 is_app_running() {
-  ps -axo command= | grep -Fqx "$app_executable"
+  [ "$(osascript -e 'application id "com.stanman.t3codelive" is running' 2>/dev/null || true)" = "true" ]
 }
 
 osascript -e 'tell application id "com.stanman.t3codelive" to quit' || true
@@ -170,6 +189,8 @@ fi
 mv "$stage_app" "$target_app"
 stage_app=""
 installed=1
+rebuild_stage="relaunching"
+write_status relaunching "The signed app was replaced and is reopening."
 reopened=0
 for attempt in 1 2 3; do
   printf 'Opening rebuilt T3 Code Live (attempt %s of 3).\n' "$attempt"
@@ -208,7 +229,61 @@ fi
 if ! git update-ref refs/t3-code-live/installed "$source_sha"; then
   printf 'Warning: the installed-source marker could not be updated.\n'
 fi
+write_status complete "T3 Code Live was installed and verified running."
 printf '[%s] Rebuild installed and verified running; T3 Code Live (Nightly) reopened. Previous bundle: %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$backup_app"
+`;
+
+export const DEV_SCRIPT = String.raw`set -euo pipefail
+
+repo="$1"
+log_path="$2"
+lock_dir="${"$"}{TMPDIR:-/tmp}/t3-code-live-dev.lock"
+lock_pid_path="$lock_dir/pid"
+
+mkdir -p "${"$"}{log_path%/*}"
+exec >>"$log_path" 2>&1
+printf '\n[%s] Starting T3 Code Live hot-reload mode from %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$repo"
+
+if ! mkdir "$lock_dir" 2>/dev/null; then
+  existing_pid="$(cat "$lock_pid_path" 2>/dev/null || true)"
+  if [ -n "$existing_pid" ] && kill -0 "$existing_pid" 2>/dev/null; then
+    printf 'T3 Code Live hot-reload mode is already running.\n'
+    exit 0
+  fi
+  rm -f "$lock_pid_path"
+  rmdir "$lock_dir" 2>/dev/null || true
+  mkdir "$lock_dir"
+fi
+printf '%s\n' "$$" >"$lock_pid_path"
+
+cleanup() {
+  if [ "$(cat "$lock_pid_path" 2>/dev/null || true)" = "$$" ]; then
+    rm -f "$lock_pid_path"
+    rmdir "$lock_dir" 2>/dev/null || true
+  fi
+}
+trap cleanup EXIT INT TERM
+
+cd "$repo"
+osascript -e 'tell application id "com.stanman.t3codelive" to quit' 2>/dev/null || true
+for _ in {1..80}; do
+  running="$(osascript -e 'application id "com.stanman.t3codelive" is running' 2>/dev/null || true)"
+  if [ "$running" != "true" ]; then
+    break
+  fi
+  sleep 0.25
+done
+
+if [ "$(osascript -e 'application id "com.stanman.t3codelive" is running' 2>/dev/null || true)" = "true" ]; then
+  printf 'The packaged app did not quit; hot-reload mode was not started.\n'
+  exit 75
+fi
+
+export T3CODE_DEV_INSTANCE="t3-code-live"
+export T3CODE_HOME="$HOME/.t3-live"
+export T3CODE_DESKTOP_PRODUCT_NAME="T3 Code Live (Nightly)"
+export PATH="$repo/node_modules/.bin:$PATH"
+node scripts/dev-runner.ts dev:desktop --home-dir "$T3CODE_HOME"
 `;
 
 function rebuildError(cwd: string, detail: string, cause?: unknown): LiveForkRebuildError {
@@ -277,6 +352,93 @@ export const start = Effect.fn("LiveForkRebuilder.start")(function* (
   );
 
   return { status: "started", logPath };
+});
+
+export const startDev = Effect.fn("LiveForkRebuilder.startDev")(function* (
+  cwd: string,
+): Effect.fn.Return<
+  LiveForkDevStartResult,
+  LiveForkRebuildError,
+  ChildProcessSpawner.ChildProcessSpawner | FileSystem.FileSystem
+> {
+  const platform = yield* HostProcessPlatform;
+  if (platform !== "darwin") {
+    return yield* rebuildError(cwd, "The local hot-reload control is available on macOS only.");
+  }
+
+  const fileSystem = yield* FileSystem.FileSystem;
+  const devRunnerExists = yield* fileSystem
+    .exists(`${cwd}/scripts/dev-runner.ts`)
+    .pipe(
+      Effect.mapError((cause) =>
+        rebuildError(cwd, "The T3 Code development runner could not be inspected.", cause),
+      ),
+    );
+  if (!devRunnerExists) {
+    return yield* rebuildError(cwd, "The T3 Code development runner could not be found.");
+  }
+
+  const logPath = `${NodeOS.homedir()}/Library/Logs/T3 Code Live/dev.log`;
+  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+  const command = ChildProcess.make(
+    "/bin/zsh",
+    ["-c", DEV_SCRIPT, "t3-code-live-dev", cwd, logPath],
+    {
+      cwd,
+      detached: true,
+      stdin: "ignore",
+      stdout: "ignore",
+      stderr: "ignore",
+    },
+  );
+
+  yield* Effect.scoped(
+    Effect.gen(function* () {
+      const handle = yield* spawner.spawn(command);
+      yield* Effect.sleep("750 millis");
+      if (!(yield* handle.isRunning)) {
+        const exitCode = Number(yield* handle.exitCode);
+        if (exitCode === 0) return;
+        return yield* rebuildError(
+          cwd,
+          `The hot-reload process exited before startup verification (status ${exitCode}).`,
+        );
+      }
+      yield* handle.unref.pipe(Effect.asVoid);
+    }),
+  ).pipe(
+    Effect.mapError((cause) =>
+      isLiveForkRebuildError(cause)
+        ? cause
+        : rebuildError(cwd, "The hot-reload process could not be started.", cause),
+    ),
+  );
+
+  return { status: "started", logPath };
+});
+
+export const readStatus = Effect.fn("LiveForkRebuilder.readStatus")(function* () {
+  const logPath = `${NodeOS.homedir()}/Library/Logs/T3 Code Live/rebuild.log`;
+  const fileSystem = yield* FileSystem.FileSystem;
+  const contents = yield* fileSystem
+    .readFileString(REBUILD_STATUS_PATH)
+    .pipe(Effect.orElseSucceed(() => ""));
+  const [state, sourceSha, detail] = contents.split("\n");
+  if (
+    state === "building" ||
+    state === "installing" ||
+    state === "relaunching" ||
+    state === "complete" ||
+    state === "failed"
+  ) {
+    return {
+      state,
+      sourceSha: sourceSha?.trim() || null,
+      ...(detail?.trim() ? { detail: detail.trim() } : {}),
+      logPath,
+    } satisfies LiveForkRebuildStatus;
+  }
+  return { state: "idle", sourceSha: null, logPath } satisfies LiveForkRebuildStatus;
 });
 
 export const localBuildIdentity = {

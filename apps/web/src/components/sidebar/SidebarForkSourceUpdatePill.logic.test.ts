@@ -4,13 +4,15 @@ import type { LiveForkUpdateResult } from "@t3tools/contracts";
 import {
   getForkUpdatePillView,
   LIVE_FORK_UPDATE_BLOCKED_MARKER,
+  LIVE_FORK_UPDATE_DECISION_REQUIRED_MARKER,
   LIVE_FORK_UPDATE_READY_MARKER,
   resolveForkRepairAgentLifecycle,
 } from "./SidebarForkSourceUpdatePill.logic";
 
 function result(
   status: LiveForkUpdateResult["status"],
-  upstreamAhead = status === "available" || status === "needs_agent" ? 3 : 0,
+  upstreamAhead =
+    status === "available" || status === "needs_agent" || status === "merge_conflict" ? 3 : 0,
 ): LiveForkUpdateResult {
   return {
     status,
@@ -23,8 +25,10 @@ function result(
     upstreamAhead,
     localAheadOrigin: 0,
     originAhead: 0,
+    mergeActive: status === "merge_conflict",
+    dirtyFiles: status === "local_changes" ? ["apps/web/src/claude-workflows.ts"] : [],
     conflictingFiles:
-      status === "needs_agent" ? ["apps/web/src/components/chat/ChatComposer.tsx"] : [],
+      status === "merge_conflict" ? ["apps/web/src/components/chat/ChatComposer.tsx"] : [],
   };
 }
 
@@ -39,12 +43,19 @@ describe("getForkUpdatePillView", () => {
   });
 
   it("turns orange and offers an agent after an automatic merge conflict", () => {
-    expect(getForkUpdatePillView(result("needs_agent"), "idle")).toMatchObject({
+    expect(getForkUpdatePillView(result("merge_conflict"), "idle")).toMatchObject({
       tone: "warning",
       title: "Spin up an agent",
       trailingLabel: "3 behind",
       description:
-        "3 commits behind upstream. The automatic merge needs GPT-5.6-Sol to preserve Live Thread.",
+        "3 commits behind upstream. The automatic merge needs GPT-5.6-Sol to preserve registered fork features.",
+      action: "agent",
+    });
+  });
+
+  it("distinguishes local work from an active merge conflict", () => {
+    expect(getForkUpdatePillView(result("local_changes", 0), "idle")).toMatchObject({
+      title: "Finish local changes",
       action: "agent",
     });
   });
@@ -53,7 +64,7 @@ describe("getForkUpdatePillView", () => {
     expect(getForkUpdatePillView(result("needs_agent", 1), "idle")).toMatchObject({
       trailingLabel: "1 behind",
       description:
-        "1 commit behind upstream. The automatic merge needs GPT-5.6-Sol to preserve Live Thread.",
+        "1 commit behind upstream. The automatic merge needs GPT-5.6-Sol to preserve registered fork features.",
     });
     expect(getForkUpdatePillView(result("needs_agent", 0), "idle")).not.toHaveProperty(
       "trailingLabel",
@@ -175,5 +186,17 @@ describe("resolveForkRepairAgentLifecycle", () => {
         assistantMessages: [{ text: "Finished without a marker.", streaming: false }],
       }),
     ).toBe("review");
+  });
+
+  it("surfaces a real product decision separately from operational failure", () => {
+    expect(
+      resolveForkRepairAgentLifecycle({
+        latestTurnState: "completed",
+        sessionStatus: "ready",
+        assistantMessages: [
+          { text: LIVE_FORK_UPDATE_DECISION_REQUIRED_MARKER, streaming: false },
+        ],
+      }),
+    ).toBe("decision");
   });
 });

@@ -8,15 +8,37 @@ export type ClaudeWorkflowStatus =
   | "failed"
   | "stopped";
 
+export type ClaudeWorkflowModelProvider = "claude" | "openai" | null;
+
+export function inferClaudeWorkflowModelProvider(
+  model: string | null | undefined,
+): ClaudeWorkflowModelProvider {
+  const normalized = model?.trim().toLowerCase();
+  if (!normalized) return null;
+  if (/(^|[/:._-])(claude|anthropic|opus|sonnet|haiku|fable)(?:$|[/:._-])/.test(normalized)) {
+    return "claude";
+  }
+  if (/(^|[/:._-])(openai|chatgpt|gpt|codex|o[1345])(?:$|[/:._-])/.test(normalized)) {
+    return "openai";
+  }
+  return null;
+}
+
 export interface ClaudeWorkflowAgent {
   id: string;
   title: string;
   phase: string;
   status: ClaudeWorkflowStatus;
+  model?: string;
   subagentType?: string;
+  delegatedModel?: string;
+  delegatedProvider?: Exclude<ClaudeWorkflowModelProvider, null>;
+  delegatedReasoningEffort?: string;
+  delegatedVia?: string;
   prompt?: string;
   summary?: string;
   lastToolName?: string;
+  recentTools: string[];
   transcriptPath?: string;
   tokens: number;
   toolUses: number;
@@ -49,6 +71,16 @@ export interface ClaudeWorkflowRun {
   tokens: number;
   toolUses: number;
   durationMs: number;
+}
+
+export function findActiveClaudeWorkflowRunIndex(
+  workflows: ReadonlyArray<Pick<ClaudeWorkflowRun, "status">>,
+): number | null {
+  const runningIndex = workflows.findIndex((workflow) => workflow.status === "running");
+  if (runningIndex >= 0) return runningIndex;
+
+  const pausedIndex = workflows.findIndex((workflow) => workflow.status === "paused");
+  return pausedIndex >= 0 ? pausedIndex : null;
 }
 
 interface WorkflowDefinition {
@@ -187,6 +219,16 @@ function usageFromPayload(payload: Record<string, unknown> | null) {
     toolUses: readNumber(usage?.tool_uses),
     durationMs: readNumber(usage?.duration_ms),
   };
+}
+
+function appendRecentTool(
+  recentTools: ReadonlyArray<string> | undefined,
+  toolName: string | undefined,
+): string[] {
+  if (!toolName) return [...(recentTools ?? [])];
+  const next = [...(recentTools ?? [])].filter((existing) => existing !== toolName);
+  next.push(toolName);
+  return next.slice(-6);
 }
 
 function workflowToolData(activity: OrchestrationThreadActivity): {
@@ -349,7 +391,17 @@ export function deriveClaudeWorkflowRuns(
             readString(entry?.phase) ??
             previous?.phase ??
             "Agents";
-          const subagentType = readString(entry?.model) ?? previous?.subagentType;
+          const model = readString(entry?.model) ?? previous?.model;
+          const subagentType = readString(entry?.subagentType) ?? previous?.subagentType;
+          const delegatedModel = readString(entry?.delegatedModel) ?? previous?.delegatedModel;
+          const delegatedProviderValue = readString(entry?.delegatedProvider);
+          const delegatedProvider =
+            delegatedProviderValue === "claude" || delegatedProviderValue === "openai"
+              ? delegatedProviderValue
+              : previous?.delegatedProvider;
+          const delegatedReasoningEffort =
+            readString(entry?.delegatedReasoningEffort) ?? previous?.delegatedReasoningEffort;
+          const delegatedVia = readString(entry?.delegatedVia) ?? previous?.delegatedVia;
           const prompt = readString(entry?.promptPreview) ?? previous?.prompt;
           const result = readString(entry?.resultPreview);
           const toolSummary = readString(entry?.lastToolSummary);
@@ -360,10 +412,16 @@ export function deriveClaudeWorkflowRuns(
             title,
             phase,
             status: workflowAgentStatus(entry?.state),
+            ...(model ? { model } : {}),
             ...(subagentType ? { subagentType } : {}),
+            ...(delegatedModel ? { delegatedModel } : {}),
+            ...(delegatedProvider ? { delegatedProvider } : {}),
+            ...(delegatedReasoningEffort ? { delegatedReasoningEffort } : {}),
+            ...(delegatedVia ? { delegatedVia } : {}),
             ...(prompt ? { prompt } : {}),
             ...(summary ? { summary } : {}),
             ...(lastToolName ? { lastToolName } : {}),
+            recentTools: appendRecentTool(previous?.recentTools, lastToolName),
             tokens: Math.max(previous?.tokens ?? 0, readNumber(entry?.tokens)),
             toolUses: Math.max(previous?.toolUses ?? 0, readNumber(entry?.toolCalls)),
             durationMs: Math.max(previous?.durationMs ?? 0, readNumber(entry?.durationMs)),
@@ -399,6 +457,16 @@ export function deriveClaudeWorkflowRuns(
         previous?.title ??
         `agent-${taskId.slice(0, 7)}`;
       const subagentType = readString(payload?.subagentType) ?? previous?.subagentType;
+      const model = readString(payload?.model) ?? previous?.model;
+      const delegatedModel = readString(payload?.delegatedModel) ?? previous?.delegatedModel;
+      const delegatedProviderValue = readString(payload?.delegatedProvider);
+      const delegatedProvider =
+        delegatedProviderValue === "claude" || delegatedProviderValue === "openai"
+          ? delegatedProviderValue
+          : previous?.delegatedProvider;
+      const delegatedReasoningEffort =
+        readString(payload?.delegatedReasoningEffort) ?? previous?.delegatedReasoningEffort;
+      const delegatedVia = readString(payload?.delegatedVia) ?? previous?.delegatedVia;
       const prompt = readString(payload?.prompt) ?? previous?.prompt;
       const summary = readString(payload?.summary) ?? previous?.summary;
       const lastToolName = readString(payload?.lastToolName) ?? previous?.lastToolName;
@@ -417,10 +485,16 @@ export function deriveClaudeWorkflowRuns(
             : activity.kind === "task.updated"
               ? normalizeStatus(asRecord(payload?.patch)?.status, previous?.status ?? "running")
               : "running",
+        ...(model ? { model } : {}),
         ...(subagentType ? { subagentType } : {}),
+        ...(delegatedModel ? { delegatedModel } : {}),
+        ...(delegatedProvider ? { delegatedProvider } : {}),
+        ...(delegatedReasoningEffort ? { delegatedReasoningEffort } : {}),
+        ...(delegatedVia ? { delegatedVia } : {}),
         ...(prompt ? { prompt } : {}),
         ...(summary ? { summary } : {}),
         ...(lastToolName ? { lastToolName } : {}),
+        recentTools: appendRecentTool(previous?.recentTools, lastToolName),
         ...(transcriptPath ? { transcriptPath } : {}),
         tokens: Math.max(previous?.tokens ?? 0, usage.tokens),
         toolUses: Math.max(previous?.toolUses ?? 0, usage.toolUses),

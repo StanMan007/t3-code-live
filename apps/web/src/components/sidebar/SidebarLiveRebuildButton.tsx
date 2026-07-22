@@ -3,7 +3,7 @@ import {
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
 import { LoaderIcon, PowerIcon } from "lucide-react";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { APP_BASE_NAME, APP_STAGE_LABEL } from "../../branding";
 import { useProjects, useThreadShells } from "../../state/entities";
@@ -21,6 +21,9 @@ export function SidebarLiveRebuildButton() {
   const threadShells = useThreadShells();
   const primaryEnvironmentId = usePrimaryEnvironmentId();
   const rebuild = useAtomCommand(liveForkUpdateEnvironment.rebuild, { reportFailure: false });
+  const rebuildStatus = useAtomCommand(liveForkUpdateEnvironment.rebuildStatus, {
+    reportFailure: false,
+  });
   const [started, setStarted] = useState(false);
   const [starting, setStarting] = useState(false);
   const [restartConfirmationOpen, setRestartConfirmationOpen] = useState(false);
@@ -29,6 +32,35 @@ export function SidebarLiveRebuildButton() {
     () => findLiveForkSourceProject(projects, primaryEnvironmentId),
     [primaryEnvironmentId, projects],
   );
+
+  useEffect(() => {
+    if (!started || !sourceProject) return;
+    let cancelled = false;
+    const timer = window.setInterval(() => {
+      void rebuildStatus({
+        environmentId: sourceProject.environmentId,
+        input: { cwd: sourceProject.workspaceRoot },
+      }).then((result) => {
+        if (cancelled || result._tag !== "Success") return;
+        if (result.value.state === "failed") {
+          window.clearInterval(timer);
+          setStarted(false);
+          toastManager.add(
+            stackedThreadToast({
+              type: "error",
+              title: "T3 Code Live rebuild failed",
+              description:
+                result.value.detail ?? `Open ${result.value.logPath} for the rebuild details.`,
+            }),
+          );
+        }
+      });
+    }, 1_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [rebuildStatus, sourceProject, started]);
 
   const startRebuild = useCallback(async () => {
     if (!sourceProject || starting || started) return;
@@ -45,7 +77,7 @@ export function SidebarLiveRebuildButton() {
         type: "success",
         title: "Rebuilding T3 Code Live…",
         description:
-          "This usually takes a few minutes. The app will close and reopen itself when the signed Nightly package is ready.",
+          "This creates and signs a packaged Nightly build. Use the lightning control for instant local iteration.",
         timeout: 0,
       });
       return;
@@ -111,7 +143,9 @@ export function SidebarLiveRebuildButton() {
             </button>
           }
         />
-        <TooltipPopup side="top">{label}</TooltipPopup>
+      <TooltipPopup side="top">
+        {busy ? label : "Install a signed local build (full package and code-sign)"}
+      </TooltipPopup>
       </Tooltip>
       <SidebarLiveRebuildConfirmation
         activeTaskCount={activeTaskCount}

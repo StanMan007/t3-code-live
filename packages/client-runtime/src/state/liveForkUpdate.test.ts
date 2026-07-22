@@ -8,12 +8,14 @@ describe("live fork update command scheduling", () => {
     input: { cwd: "/Users/test/t3code" },
   };
 
-  it("keeps checks, merges, and rebuilds in separate single-flight lanes", () => {
+  it("keeps update, development, and rebuild commands in separate single-flight lanes", () => {
     const checkKey = liveForkUpdateCommandKey("check", target);
     const mergeKey = liveForkUpdateCommandKey("merge", target);
     const rebuildKey = liveForkUpdateCommandKey("rebuild", target);
+    const devStartKey = liveForkUpdateCommandKey("devStart", target);
+    const rebuildStatusKey = liveForkUpdateCommandKey("rebuildStatus", target);
 
-    assert.equal(new Set([checkKey, mergeKey, rebuildKey]).size, 3);
+    assert.equal(new Set([checkKey, mergeKey, devStartKey, rebuildKey, rebuildStatusKey]).size, 5);
   });
 
   it("deduplicates repeated calls to the same command and target", () => {

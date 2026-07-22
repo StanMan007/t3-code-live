@@ -10,6 +10,10 @@ export type LiveForkUpdateInput = typeof LiveForkUpdateInput.Type;
 export const LiveForkUpdateStatus = Schema.Literals([
   "current",
   "available",
+  "local_changes",
+  "merge_conflict",
+  "origin_diverged",
+  "decision_required",
   "sync_pending",
   "install_pending",
   "merged",
@@ -29,6 +33,8 @@ export const LiveForkUpdateResult = Schema.Struct({
   upstreamAhead: NonNegativeInt,
   localAheadOrigin: NonNegativeInt,
   originAhead: NonNegativeInt,
+  mergeActive: Schema.Boolean,
+  dirtyFiles: Schema.Array(TrimmedNonEmptyString),
   conflictingFiles: Schema.Array(TrimmedNonEmptyString),
   detail: Schema.optional(TrimmedNonEmptyString),
 });
@@ -39,6 +45,20 @@ export const LiveForkRebuildResult = Schema.Struct({
   logPath: TrimmedNonEmptyString,
 });
 export type LiveForkRebuildResult = typeof LiveForkRebuildResult.Type;
+
+export const LiveForkDevStartResult = Schema.Struct({
+  status: Schema.Literal("started"),
+  logPath: TrimmedNonEmptyString,
+});
+export type LiveForkDevStartResult = typeof LiveForkDevStartResult.Type;
+
+export const LiveForkRebuildStatus = Schema.Struct({
+  state: Schema.Literals(["idle", "building", "installing", "relaunching", "complete", "failed"]),
+  sourceSha: Schema.NullOr(TrimmedNonEmptyString),
+  detail: Schema.optional(TrimmedNonEmptyString),
+  logPath: TrimmedNonEmptyString,
+});
+export type LiveForkRebuildStatus = typeof LiveForkRebuildStatus.Type;
 
 export class LiveForkRebuildError extends Schema.TaggedErrorClass<LiveForkRebuildError>()(
   "LiveForkRebuildError",

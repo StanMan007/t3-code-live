@@ -37,8 +37,13 @@ import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { ProviderAdapterProcessError, ProviderAdapterValidationError } from "../Errors.ts";
 import type { ClaudeAdapterShape } from "../Services/ClaudeAdapter.ts";
-import { makeClaudeAdapter, type ClaudeAdapterLiveOptions } from "./ClaudeAdapter.ts";
+import {
+  extractCodexMcpAttributionFromClaudeTranscript,
+  makeClaudeAdapter,
+  type ClaudeAdapterLiveOptions,
+} from "./ClaudeAdapter.ts";
 const decodeClaudeSettings = Schema.decodeSync(ClaudeSettings);
+const encodeUnknownJsonString = Schema.encodeUnknownSync(Schema.UnknownFromJsonString);
 
 // Test-local service tag so the rest of the file can keep using `yield* ClaudeAdapter`.
 class ClaudeAdapter extends Context.Service<ClaudeAdapter, ClaudeAdapterShape>()(
@@ -273,6 +278,43 @@ const THREAD_ID = ThreadId.make("thread-claude-1");
 const RESUME_THREAD_ID = ThreadId.make("thread-claude-resume");
 
 describe("ClaudeAdapterLive", () => {
+  it("extracts delegated model attribution only from a real Codex MCP tool call", () => {
+    const transcript = [
+      JSON.stringify({
+        message: {
+          model: "claude-sonnet-5",
+          content: [
+            {
+              type: "tool_use",
+              name: "mcp__codex__codex",
+              input: {
+                prompt: "Review the change",
+                config: {
+                  model: "gpt-5.6-sol",
+                  model_reasoning_effort: "high",
+                },
+              },
+            },
+          ],
+        },
+      }),
+      JSON.stringify({ message: { content: [{ type: "text", text: "done" }] } }),
+    ].join("\n");
+
+    assert.deepEqual(extractCodexMcpAttributionFromClaudeTranscript(transcript), {
+      provider: "openai",
+      toolName: "mcp__codex__codex",
+      model: "gpt-5.6-sol",
+      reasoningEffort: "high",
+    });
+    assert.equal(
+      extractCodexMcpAttributionFromClaudeTranscript(
+        JSON.stringify({ message: { content: [{ type: "text", text: "gpt-5.6-sol" }] } }),
+      ),
+      undefined,
+    );
+  });
+
   it.effect("marks T3 prompts as human input and enables workflow observability", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
@@ -1768,6 +1810,131 @@ describe("ClaudeAdapterLive", () => {
             label: "inspect:package",
             phaseTitle: "Inspect",
             state: "progress",
+          },
+        ]);
+      }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("enriches workflow progress from a verified Codex MCP transcript call", () => {
+    const transcriptDir = NodeFS.mkdtempSync(
+      NodePath.join(NodeOS.tmpdir(), "claude-workflow-attribution-"),
+    );
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => NodeFS.rmSync(transcriptDir, { recursive: true, force: true })),
+      );
+      NodeFS.writeFileSync(
+        NodePath.join(transcriptDir, "agent-agent-codex.jsonl"),
+        `${encodeUnknownJsonString({
+          message: {
+            model: "claude-sonnet-5",
+            content: [
+              {
+                type: "tool_use",
+                name: "mcp__codex__codex",
+                input: {
+                  config: {
+                    model: "gpt-5.6-sol",
+                    model_reasoning_effort: "high",
+                  },
+                },
+              },
+            ],
+          },
+        })}\n`,
+      );
+
+      const adapter = yield* ClaudeAdapter;
+      const progressEventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.type === "task.progress"),
+        Stream.take(1),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      harness.query.emit({
+        type: "stream_event",
+        session_id: "sdk-session-workflow-attribution",
+        uuid: "workflow-tool-start",
+        parent_tool_use_id: null,
+        event: {
+          type: "content_block_start",
+          index: 1,
+          content_block: {
+            type: "tool_use",
+            id: "tool-workflow-1",
+            name: "Workflow",
+            input: { script: "export const meta = { name: 'attribution' }" },
+          },
+        },
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "user",
+        session_id: "sdk-session-workflow-attribution",
+        uuid: "workflow-tool-result",
+        parent_tool_use_id: null,
+        tool_use_result: {
+          taskId: "workflow-task-attribution",
+          transcriptDir,
+        },
+        message: {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "tool-workflow-1",
+              content: "Workflow launched in background.",
+            },
+          ],
+        },
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "system",
+        subtype: "task_progress",
+        task_id: "workflow-task-attribution",
+        description: "Codex review",
+        usage: { total_tokens: 123, tool_uses: 1, duration_ms: 400 },
+        workflow_progress: [
+          {
+            type: "workflow_agent",
+            agentId: "agent-codex",
+            label: "review:codex",
+            phaseTitle: "Review",
+            model: "claude-sonnet-5",
+            state: "progress",
+            lastToolName: "mcp__codex__codex",
+          },
+        ],
+        session_id: "sdk-session-workflow-attribution",
+        uuid: "workflow-task-progress",
+      } as unknown as SDKMessage);
+
+      const progressEvent = Array.from(yield* Fiber.join(progressEventsFiber))[0];
+      assert.equal(progressEvent?.type, "task.progress");
+      if (progressEvent?.type === "task.progress") {
+        assert.deepEqual(progressEvent.payload.workflowProgress, [
+          {
+            type: "workflow_agent",
+            agentId: "agent-codex",
+            label: "review:codex",
+            phaseTitle: "Review",
+            model: "claude-sonnet-5",
+            state: "progress",
+            lastToolName: "mcp__codex__codex",
+            delegatedProvider: "openai",
+            delegatedVia: "mcp__codex__codex",
+            delegatedModel: "gpt-5.6-sol",
+            delegatedReasoningEffort: "high",
           },
         ]);
       }

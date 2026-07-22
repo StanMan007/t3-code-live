@@ -1,6 +1,5 @@
-import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
-import * as NodePath from "node:path";
+import * as FileSystem from "effect/FileSystem";
 
 import * as Effect from "effect/Effect";
 
@@ -12,7 +11,7 @@ const EXPECTED_ORIGIN_URL = "https://github.com/StanMan007/t3-code-live.git";
 const UPSTREAM_REF = "upstream/main";
 const ORIGIN_REF = "origin/main";
 const INSTALLED_REF = "refs/t3-code-live/installed";
-const REBUILD_LOCK_DIR = NodePath.join(NodeOS.tmpdir(), "t3-code-live-rebuild.lock");
+const REBUILD_LOCK_DIR = `${NodeOS.tmpdir()}/t3-code-live-rebuild.lock`;
 
 interface LiveForkInspection {
   readonly result: LiveForkUpdateResult;
@@ -21,6 +20,23 @@ interface LiveForkInspection {
 
 function splitNullSeparated(input: string): string[] {
   return input.split("\0").filter((value) => value.length > 0);
+}
+
+function parsePorcelainPaths(input: string): string[] {
+  const entries = splitNullSeparated(input);
+  const paths: string[] = [];
+  for (let index = 0; index < entries.length; index += 1) {
+    const entry = entries[index];
+    if (!entry) continue;
+    const status = entry.slice(0, 2);
+    const path = entry.slice(3);
+    if (path) paths.push(path);
+    if ((status.includes("R") || status.includes("C")) && entries[index + 1]) {
+      paths.push(entries[index + 1]!);
+      index += 1;
+    }
+  }
+  return [...new Set(paths)];
 }
 
 function parseDivergence(input: string): {
@@ -80,6 +96,13 @@ const inspect = Effect.fn("LiveForkUpdater.inspect")(function* (
     "-z",
   ]);
   const dirty = statusResult.stdout.length > 0;
+  const dirtyFiles = parsePorcelainPaths(statusResult.stdout);
+  const mergeHeadResult = yield* run(
+    "LiveForkUpdater.mergeHead",
+    ["rev-parse", "--verify", "--quiet", "MERGE_HEAD"],
+    true,
+  );
+  const mergeActive = mergeHeadResult.exitCode === 0;
 
   if (upstreamUrl !== EXPECTED_UPSTREAM_URL || originUrl !== EXPECTED_ORIGIN_URL) {
     return {
@@ -95,6 +118,8 @@ const inspect = Effect.fn("LiveForkUpdater.inspect")(function* (
         upstreamAhead: 0,
         localAheadOrigin: 0,
         originAhead: 0,
+        mergeActive,
+        dirtyFiles,
         conflictingFiles,
         detail:
           upstreamUrl !== EXPECTED_UPSTREAM_URL
@@ -143,6 +168,8 @@ const inspect = Effect.fn("LiveForkUpdater.inspect")(function* (
         upstreamAhead: 0,
         localAheadOrigin: 0,
         originAhead: 0,
+        mergeActive,
+        dirtyFiles,
         conflictingFiles,
         detail: "The fork or upstream commit could not be resolved.",
       },
@@ -165,19 +192,42 @@ const inspect = Effect.fn("LiveForkUpdater.inspect")(function* (
   const originDivergence = parseDivergence(originDivergenceResult.stdout);
   const originAhead = originDivergence.localAhead;
   const localAheadOrigin = originDivergence.upstreamAhead;
-  const result: LiveForkUpdateResult = {
-    status:
-      conflictingFiles.length > 0
+  const status: LiveForkUpdateResult["status"] =
+    conflictingFiles.length > 0
+      ? "merge_conflict"
+      : mergeActive
         ? "needs_agent"
-        : branch !== "main" || originAhead > 0
+        : branch !== "main"
           ? "needs_agent"
-          : divergence.upstreamAhead > 0
-            ? "available"
-            : localAheadOrigin > 0
-              ? "sync_pending"
-              : installedSha !== null && installedSha !== currentSha
-                ? "install_pending"
-                : "current",
+          : originAhead > 0
+            ? "origin_diverged"
+            : dirty
+              ? "local_changes"
+              : divergence.upstreamAhead > 0
+                ? "available"
+                : localAheadOrigin > 0
+                  ? "sync_pending"
+                  : installedSha !== null && installedSha !== currentSha
+                    ? "install_pending"
+                    : "current";
+  const detail =
+    conflictingFiles.length > 0
+      ? "The upstream merge has conflicts that need agent assistance."
+      : mergeActive
+        ? "A Git merge is active and needs agent inspection before updating can continue."
+        : branch !== "main"
+          ? "Switch to main before updating T3 Code Live."
+          : originAhead > 0
+            ? `origin/main has ${originAhead} commit${originAhead === 1 ? "" : "s"} that local main does not contain. An agent should reconcile the fork before syncing upstream.`
+            : dirty
+              ? `The fork has uncommitted local changes in ${dirtyFiles.length} path${dirtyFiles.length === 1 ? "" : "s"}. Finish or checkpoint the local feature before syncing upstream.`
+              : localAheadOrigin > 0 && divergence.upstreamAhead === 0
+                ? `${localAheadOrigin} local commit${localAheadOrigin === 1 ? " is" : "s are"} ready to sync to origin/main.`
+                : installedSha !== null && installedSha !== currentSha
+                  ? "The installed app was built from an older source commit."
+                  : undefined;
+  const result: LiveForkUpdateResult = {
+    status,
     branch,
     currentSha,
     upstreamSha,
@@ -186,22 +236,10 @@ const inspect = Effect.fn("LiveForkUpdater.inspect")(function* (
     ...divergence,
     localAheadOrigin,
     originAhead,
+    mergeActive,
+    dirtyFiles,
     conflictingFiles,
-    ...(conflictingFiles.length > 0
-      ? { detail: "The upstream merge has conflicts that need agent assistance." }
-      : branch !== "main"
-        ? { detail: "Switch to main before updating T3 Code Live." }
-        : originAhead > 0
-          ? {
-              detail: `origin/main has ${originAhead} commit${originAhead === 1 ? "" : "s"} that local main does not contain. An agent should reconcile the fork before syncing upstream.`,
-            }
-          : localAheadOrigin > 0 && divergence.upstreamAhead === 0
-            ? {
-                detail: `${localAheadOrigin} local commit${localAheadOrigin === 1 ? " is" : "s are"} ready to sync to origin/main.`,
-              }
-            : installedSha !== null && installedSha !== currentSha
-              ? { detail: "The installed app was built from an older source commit." }
-              : {}),
+    ...(detail === undefined ? {} : { detail }),
   };
 
   return { dirty, result } satisfies LiveForkInspection;
@@ -216,10 +254,21 @@ export const merge = Effect.fn("LiveForkUpdater.merge")(function* (cwd: string) 
   const inspection = yield* inspect(cwd, { fetch: true });
   const before = inspection.result;
 
-  if (before.status === "unavailable" || before.status === "needs_agent") {
+  if (
+    before.status === "unavailable" ||
+    before.status === "needs_agent" ||
+    before.status === "merge_conflict" ||
+    before.status === "origin_diverged" ||
+    before.status === "local_changes" ||
+    before.status === "decision_required"
+  ) {
     return before;
   }
-  if (NodeFS.existsSync(REBUILD_LOCK_DIR)) {
+  const fileSystem = yield* FileSystem.FileSystem;
+  const rebuildLocked = yield* fileSystem
+    .exists(REBUILD_LOCK_DIR)
+    .pipe(Effect.orElseSucceed(() => false));
+  if (rebuildLocked) {
     return {
       ...before,
       status: "unavailable",
@@ -233,15 +282,6 @@ export const merge = Effect.fn("LiveForkUpdater.merge")(function* (cwd: string) 
       detail: "The automatic updater only merges while the fork is on main.",
     } satisfies LiveForkUpdateResult;
   }
-  if (inspection.dirty) {
-    return {
-      ...before,
-      status: "needs_agent",
-      detail:
-        "The fork has uncommitted local changes. An agent should preserve the intended fork work before syncing upstream.",
-    } satisfies LiveForkUpdateResult;
-  }
-
   let mergedUpstream = false;
   if (before.upstreamAhead > 0) {
     const mergeResult = yield* git.execute({
@@ -256,10 +296,11 @@ export const merge = Effect.fn("LiveForkUpdater.merge")(function* (cwd: string) 
     if (mergeResult.exitCode !== 0) {
       return {
         ...afterMerge.result,
-        status: "needs_agent",
+        status:
+          afterMerge.result.conflictingFiles.length > 0 ? "merge_conflict" : "needs_agent",
         detail:
           afterMerge.result.conflictingFiles.length > 0
-            ? "The automatic merge stopped on conflicts. Start an agent to preserve Live Thread and finish the merge."
+            ? "The automatic merge stopped on conflicts. Start an agent to preserve registered fork features and finish the merge."
             : "Git could not complete the automatic merge. Start an agent to inspect and finish it safely.",
       } satisfies LiveForkUpdateResult;
     }
@@ -270,7 +311,8 @@ export const merge = Effect.fn("LiveForkUpdater.merge")(function* (cwd: string) 
   if (beforePush.result.originAhead > 0 || beforePush.result.conflictingFiles.length > 0) {
     return {
       ...beforePush.result,
-      status: "needs_agent",
+      status:
+        beforePush.result.originAhead > 0 ? "origin_diverged" : "merge_conflict",
       detail: "The fork cannot be fast-forwarded to origin/main without reconciliation.",
     } satisfies LiveForkUpdateResult;
   }

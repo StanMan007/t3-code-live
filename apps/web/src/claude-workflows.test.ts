@@ -1,6 +1,50 @@
 import { describe, expect, it } from "vite-plus/test";
 import type { OrchestrationThreadActivity } from "@t3tools/contracts";
-import { deriveClaudeWorkflowRuns, parseClaudeWorkflowDefinition } from "./claude-workflows";
+import {
+  deriveClaudeWorkflowRuns,
+  findActiveClaudeWorkflowRunIndex,
+  inferClaudeWorkflowModelProvider,
+  parseClaudeWorkflowDefinition,
+} from "./claude-workflows";
+
+describe("findActiveClaudeWorkflowRunIndex", () => {
+  it("prefers the newest running workflow over paused and completed history", () => {
+    expect(
+      findActiveClaudeWorkflowRunIndex([
+        { status: "paused" },
+        { status: "running" },
+        { status: "running" },
+        { status: "completed" },
+      ]),
+    ).toBe(1);
+  });
+
+  it("falls back to the newest paused workflow when nothing is running", () => {
+    expect(
+      findActiveClaudeWorkflowRunIndex([
+        { status: "completed" },
+        { status: "paused" },
+        { status: "paused" },
+      ]),
+    ).toBe(1);
+  });
+
+  it("returns null when there is no active workflow", () => {
+    expect(
+      findActiveClaudeWorkflowRunIndex([{ status: "completed" }, { status: "stopped" }]),
+    ).toBeNull();
+  });
+});
+
+describe("inferClaudeWorkflowModelProvider", () => {
+  it("identifies Claude and OpenAI model families", () => {
+    expect(inferClaudeWorkflowModelProvider("claude-opus-4-8")).toBe("claude");
+    expect(inferClaudeWorkflowModelProvider("fable-5")).toBe("claude");
+    expect(inferClaudeWorkflowModelProvider("openai/gpt-5.6-sol")).toBe("openai");
+    expect(inferClaudeWorkflowModelProvider("o3-mini")).toBe("openai");
+    expect(inferClaudeWorkflowModelProvider("custom-model")).toBeNull();
+  });
+});
 
 describe("parseClaudeWorkflowDefinition", () => {
   it("reads workflow metadata, phases, and literal agent labels without executing the script", () => {
@@ -162,6 +206,10 @@ describe("deriveClaudeWorkflowRuns", () => {
               label: "inspect:root-package",
               phaseTitle: "Inspect",
               model: "claude-fable-5[1m]",
+              delegatedProvider: "openai",
+              delegatedModel: "gpt-5.6-sol",
+              delegatedReasoningEffort: "high",
+              delegatedVia: "mcp__codex__codex",
               state: "done",
               promptPreview: "Read package.json",
               lastToolName: "StructuredOutput",
@@ -207,6 +255,12 @@ describe("deriveClaudeWorkflowRuns", () => {
         title: "inspect:root-package",
         phase: "Inspect",
         status: "completed",
+        model: "claude-fable-5[1m]",
+        delegatedProvider: "openai",
+        delegatedModel: "gpt-5.6-sol",
+        delegatedReasoningEffort: "high",
+        delegatedVia: "mcp__codex__codex",
+        recentTools: ["StructuredOutput"],
         summary: '{"name":"@t3tools/monorepo"}',
       }),
       expect.objectContaining({

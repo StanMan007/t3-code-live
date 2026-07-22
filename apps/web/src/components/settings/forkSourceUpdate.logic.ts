@@ -8,11 +8,15 @@ import type {
 } from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
 
+import { formatLiveForkFeatureContracts } from "./liveForkFeatures";
+
 const LIVE_FORK_OWNER = "stanman007";
 const LIVE_FORK_REPOSITORY = "t3-code-live";
 const PREFERRED_UPDATE_MODELS = ["gpt-5.6-sol", "gpt-5.6"] as const;
 export const LIVE_FORK_UPDATE_READY_MARKER = "T3_CODE_LIVE_UPDATE_READY";
 export const LIVE_FORK_UPDATE_BLOCKED_MARKER = "T3_CODE_LIVE_UPDATE_BLOCKED";
+export const LIVE_FORK_UPDATE_DECISION_REQUIRED_MARKER =
+  "T3_CODE_LIVE_UPDATE_DECISION_REQUIRED";
 
 type ForkUpdateProvider = Pick<
   ServerProvider,
@@ -128,18 +132,23 @@ export function buildLiveForkMergeRepairPrompt(input: {
   readonly installedVersion: string;
   readonly updateResult: LiveForkUpdateResult;
 }): string {
-  const hasMergeConflicts = input.updateResult.conflictingFiles.length > 0;
-  const hasDirtyWorktreeBlocker =
-    !hasMergeConflicts &&
-    input.updateResult.detail?.toLowerCase().includes("local changes") === true;
-  const blockerKind = hasMergeConflicts
-    ? "active merge conflicts"
-    : hasDirtyWorktreeBlocker
-      ? "uncommitted local fork changes; no merge has started"
-      : "Git needs inspection before the upstream merge can continue";
-  const conflictSummary = hasMergeConflicts
+  const blockerKind =
+    input.updateResult.status === "merge_conflict"
+      ? "active merge conflicts"
+      : input.updateResult.status === "local_changes"
+        ? "uncommitted local fork changes; no merge has started"
+        : input.updateResult.status === "origin_diverged"
+          ? "origin/main contains commits missing from local main"
+          : input.updateResult.mergeActive
+            ? "an active merge needs inspection"
+            : "Git needs inspection before the upstream merge can continue";
+  const conflictSummary = input.updateResult.conflictingFiles.length > 0
     ? input.updateResult.conflictingFiles.map((file) => `  - ${file}`).join("\n")
     : "  - None reported. Do not assume that a merge is active.";
+  const dirtySummary =
+    input.updateResult.dirtyFiles.length > 0
+      ? input.updateResult.dirtyFiles.map((file) => `  - ${file}`).join("\n")
+      : "  - None reported.";
 
   return `Finish the T3 Code Live upstream merge in the existing fork at ${input.workspaceRoot}.
 
@@ -152,27 +161,37 @@ Updater detail: ${input.updateResult.detail ?? "The automatic merge needs assist
 Reported unmerged files:
 ${conflictSummary}
 
+Reported dirty files:
+${dirtySummary}
+
 Primary objective:
-- Resolve only the reported Git blocker and finish the normal merge.
-- Upstream T3 Code is the source of truth. Preserve only the smallest documented Live Thread, its real-time agent/right-panel integration, updater, or rebuilder seam needed in each conflicted file.
-- Prefer upstream everywhere else. Do not audit, refactor, or improve unrelated code.
+- Resolve only the reported Git blocker, preserve intentional fork behavior, and finish the normal merge or sync.
+- Upstream T3 Code is the structural baseline. The registered fork features below are product requirements.
+- Adopt upstream's current structure everywhere it can satisfy the registered behavior. Never retain an entire fork file merely because it is ours.
+
+Registered fork feature contracts:
+${formatLiveForkFeatureContracts()}
 
 Safety rules:
 - Read AGENTS.md. Work only in the current checkout and branch.
 - Use a normal merge; never rebase, reset, force-push, discard, automatically stash, or rewrite existing history.
-- Do not resolve a conflict by blindly taking an entire \`ours\` file. Retain upstream's current implementation and reapply only the smallest required Live Thread seam.
-- If unrelated user work is mixed into the dirty tree or a conflict requires product judgment, stop and report the exact files and decision needed. Do not hide the problem in the update commit.
-- Do not run lint, formatting, typecheck, tests, builds, dev servers, packaging, installation, or UI verification. Do not push, open a PR, or publish.
+- Inspect base, ours, and theirs for every conflicted file. Retain upstream's implementation and reapply the smallest registered feature seam.
+- If dirty work is cohesive and clearly implements a registered feature or the user's stated local change, checkpoint it as one narrow commit before syncing. If it is mixed, incomplete, secret-bearing, or ambiguous, request a decision instead.
+- The T3 Code Dev app, Electron, its local server, \`vp ... dev\`, and \`vp pack --watch\` are the expected read/watch runtime that invoked this workflow. Do not classify them as competing source writers or stop them merely because they are running. Block only on concrete evidence that a separate process is mutating tracked source files or Git index/refs, such as an active Git lock, package install, formatter, or another editing agent.
+- Do not run lint, formatting, broad typecheck/tests, builds, dev servers, packaging, installation, or UI verification. If a conflict changes a registered feature, run only its listed focused test when that test is narrow enough to complete quickly.
+- Do not push, open a PR, or publish. The updater performs the verified fast-forward push after the agent finishes.
 
 Minimal repair flow:
-1. Confirm the current branch, \`MERGE_HEAD\`, \`git status --short --branch\`, and \`git diff --name-only --diff-filter=U\`. Confirm \`upstream\` is \`https://github.com/pingdotgg/t3code.git\`.
-2. If a merge is active, inspect only the reported conflicted files and their three Git stages. Keep upstream's implementation and reapply only the minimal documented fork seam. Stage only those resolutions and finish the existing merge with hooks disabled.
-3. If no merge is active, do not invent one. If the tree is clean, run the normal \`git merge --no-edit upstream/main\`. If local work blocks the merge, inspect only the blocking files; preserve a clearly documented fork seam, otherwise stop and report the exact decision needed.
-4. Perform Git-only completion proof: no unmerged paths, no active \`MERGE_HEAD\`, \`git merge-base --is-ancestor upstream/main HEAD\` succeeds, and the working tree is clean. Do not run code-quality or runtime checks.
+1. Confirm the current branch, \`MERGE_HEAD\`, Git index lock state, \`git status --short --branch\`, and \`git diff --name-only --diff-filter=U\`. Confirm both canonical remotes. Expected T3 Code Dev watch/runtime processes are not a blocker by themselves.
+2. If a merge is active, inspect the reported conflicted files and their three Git stages. Combine upstream structure with the registered behavior, stage only the resolutions, and finish the existing merge.
+3. If no merge is active and the tree is dirty, classify the reported dirty paths. Checkpoint one cohesive intentional feature, or request a decision when intent is ambiguous. Never auto-stash or discard it.
+4. Once the tree is clean, run \`git merge --no-edit upstream/main\` only when upstream is ahead. Do not invent a merge when upstream is already an ancestor.
+5. Perform Git-only completion proof: no unmerged paths, no active \`MERGE_HEAD\`, \`git merge-base --is-ancestor upstream/main HEAD\` succeeds, and the working tree is clean.
 
 Final response contract:
-- Report only the files that conflicted, the narrow resolution applied to each, and the Git-only completion proof.
+- Report the blocker files, the narrow resolution or checkpoint applied, and the Git-only completion proof.
 - End with \`${LIVE_FORK_UPDATE_READY_MARKER}\` on its own line only if upstream ancestry, merge-complete, and clean-tree proof pass.
+- If a real product decision is required, end with \`${LIVE_FORK_UPDATE_DECISION_REQUIRED_MARKER}\` and provide two concrete choices, the behavioral impact of each, and your recommendation. Do not use this for mechanical Git conflicts.
 - Otherwise end with \`${LIVE_FORK_UPDATE_BLOCKED_MARKER}\` on its own line and explain the exact blocker. Never emit the ready marker for a partial, interrupted, or dirty update.
 
 Finish with this explicit next action: use the T3 Code Live power button once to rebuild, replace, and relaunch the packaged app. A source merge alone does not update the running app.`;

@@ -493,7 +493,17 @@ export const make = Effect.gen(function* () {
         ),
       );
       return Option.some(decrypted);
-    }).pipe(Effect.withSpan("desktop.connectionCatalogStore.get")),
+    }).pipe(
+      Effect.catchTag("DesktopConnectionCatalogStoreProtectionError", (error) =>
+        environment.isDevelopment && error.operation === "decrypt-catalog"
+          ? Effect.logWarning(
+              "The development app cannot decrypt the signed app's connection catalog; continuing with its primary local environment.",
+              { catalogPath },
+            ).pipe(Effect.as(Option.none<string>()))
+          : Effect.fail(error),
+      ),
+      Effect.withSpan("desktop.connectionCatalogStore.get"),
+    ),
     set: Effect.fn("desktop.connectionCatalogStore.set")(function* (catalog) {
       if (!(yield* encryptionAvailable)) {
         return false;
