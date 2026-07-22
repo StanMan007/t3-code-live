@@ -10,6 +10,8 @@ export type LiveForkUpdateInput = typeof LiveForkUpdateInput.Type;
 export const LiveForkUpdateStatus = Schema.Literals([
   "current",
   "available",
+  "sync_pending",
+  "install_pending",
   "merged",
   "needs_agent",
   "unavailable",
@@ -21,8 +23,12 @@ export const LiveForkUpdateResult = Schema.Struct({
   branch: Schema.NullOr(TrimmedNonEmptyString),
   currentSha: Schema.NullOr(TrimmedNonEmptyString),
   upstreamSha: Schema.NullOr(TrimmedNonEmptyString),
+  originSha: Schema.NullOr(TrimmedNonEmptyString),
+  installedSha: Schema.NullOr(TrimmedNonEmptyString),
   localAhead: NonNegativeInt,
   upstreamAhead: NonNegativeInt,
+  localAheadOrigin: NonNegativeInt,
+  originAhead: NonNegativeInt,
   conflictingFiles: Schema.Array(TrimmedNonEmptyString),
   detail: Schema.optional(TrimmedNonEmptyString),
 });

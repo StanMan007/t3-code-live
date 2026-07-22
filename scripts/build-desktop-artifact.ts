@@ -1942,11 +1942,33 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
   for (const entry of stageEntries) {
     const from = path.join(stageDistDir, entry);
     const stat = yield* fs.stat(from).pipe(Effect.orElseSucceed(() => null));
-    if (!stat || stat.type !== "File") continue;
+    if (!stat) continue;
 
-    const to = path.join(options.outputDir, entry);
-    yield* fs.copyFile(from, to);
-    copiedArtifacts.push(to);
+    if (stat.type === "File") {
+      const to = path.join(options.outputDir, entry);
+      yield* fs.copyFile(from, to);
+      copiedArtifacts.push(to);
+      continue;
+    }
+
+    if (options.platform !== "mac" || options.target !== "dir" || stat.type !== "Directory") {
+      continue;
+    }
+
+    const appCandidates = entry.endsWith(".app")
+      ? [{ name: entry, source: from }]
+      : (yield* fs.readDirectory(from))
+          .filter((candidate) => candidate.endsWith(".app"))
+          .map((candidate) => ({ name: candidate, source: path.join(from, candidate) }));
+
+    for (const candidate of appCandidates) {
+      const candidateStat = yield* fs.stat(candidate.source).pipe(Effect.orElseSucceed(() => null));
+      if (!candidateStat || candidateStat.type !== "Directory") continue;
+
+      const to = path.join(options.outputDir, candidate.name);
+      yield* fs.copy(candidate.source, to);
+      copiedArtifacts.push(to);
+    }
   }
 
   if (copiedArtifacts.length === 0) {

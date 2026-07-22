@@ -73,12 +73,17 @@ describe("LiveForkRebuilder", () => {
         "/Users/test/T3 Code/t3code",
         result.logPath,
       ]);
-      assert.match(spawned.args[1] ?? "", /dist:desktop:dmg:arm64/u);
+      assert.match(spawned.args[1] ?? "", /dist:desktop:dir:arm64/u);
+      assert.match(spawned.args[1] ?? "", /--output-dir/u);
+      assert.notMatch(spawned.args[1] ?? "", /hdiutil/u);
       assert.match(spawned.args[1] ?? "", /com\.stanman\.t3codelive/u);
       assert.match(spawned.args[1] ?? "", /T3CODE_DESKTOP_ASSET_BRAND='nightly'/u);
       assert.match(spawned.args[1] ?? "", /exit_status=\$\?/u);
       assert.match(spawned.args[1] ?? "", /lock_pid_path/u);
       assert.match(spawned.args[1] ?? "", /Recovered an abandoned/u);
+      assert.match(spawned.args[1] ?? "", /cannot rebuild from a dirty working tree/u);
+      assert.match(spawned.args[1] ?? "", /origin\/main changed during the rebuild/u);
+      assert.match(spawned.args[1] ?? "", /refs\/t3-code-live\/installed/u);
       assert.equal(didUnref, true);
     }).pipe(
       Effect.provide(

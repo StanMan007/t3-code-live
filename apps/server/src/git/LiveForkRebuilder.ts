@@ -27,7 +27,7 @@ log_dir="${"$"}{log_path%/*}"
 lock_dir="${"$"}{TMPDIR:-/tmp}/t3-code-live-rebuild.lock"
 lock_pid_path="$lock_dir/pid"
 lock_owned=0
-mount_dir=""
+local_output_dir=""
 stage_app=""
 backup_app=""
 target_app="/Applications/T3 Code Live (Nightly).app"
@@ -74,8 +74,10 @@ acquire_lock
 
 cleanup() {
   exit_status=$?
-  if [ -n "$mount_dir" ] && mount | grep -Fq " on $mount_dir "; then
-    hdiutil detach "$mount_dir" -quiet || true
+  if [ -n "$local_output_dir" ]; then
+    case "$local_output_dir" in
+      "${"$"}{TMPDIR:-/tmp}"/t3-code-live-output.*) rm -rf -- "$local_output_dir" ;;
+    esac
   fi
   if [ "$installed" -eq 0 ] && [ -n "$backup_app" ] && [ -d "$backup_app" ] && [ ! -e "$target_app" ]; then
     mv "$backup_app" "$target_app" || true
@@ -96,23 +98,33 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 cd "$repo"
+if [ "$(git symbolic-ref --quiet --short HEAD || true)" != "main" ]; then
+  printf 'T3 Code Live can only rebuild from main.\n'
+  exit 65
+fi
+if [ -n "$(git status --porcelain=v1)" ]; then
+  printf 'T3 Code Live cannot rebuild from a dirty working tree.\n'
+  exit 65
+fi
+source_sha="$(git rev-parse HEAD)"
+if [ "$(git rev-parse origin/main)" != "$source_sha" ]; then
+  printf 'T3 Code Live cannot rebuild until local main and origin/main match.\n'
+  exit 65
+fi
+if ! git merge-base --is-ancestor upstream/main "$source_sha"; then
+  printf 'T3 Code Live cannot rebuild until upstream/main is integrated.\n'
+  exit 65
+fi
+local_output_dir="$(mktemp -d "${"$"}{TMPDIR:-/tmp}/t3-code-live-output.XXXXXX")"
 T3CODE_DESKTOP_APP_ID='com.stanman.t3codelive' \
 T3CODE_DESKTOP_PRODUCT_NAME='T3 Code Live (Nightly)' \
 T3CODE_DESKTOP_ASSET_BRAND='nightly' \
 T3CODE_DESKTOP_LOCAL_SIGN_IDENTITY='Apple Development: Jonathan Stanley (P8U8347VLY)' \
-  ./node_modules/.bin/vp run dist:desktop:dmg:arm64
+  ./node_modules/.bin/vp run dist:desktop:dir:arm64 -- --output-dir "$local_output_dir"
 
-dmg_path="$(find "$repo/release" -maxdepth 1 -type f -name 'T3-Code-*-arm64.dmg' -print0 | xargs -0 ls -t | head -n 1)"
-if [ -z "$dmg_path" ] || [ ! -f "$dmg_path" ]; then
-  printf 'The rebuilt DMG could not be located.\n'
-  exit 66
-fi
-
-mount_dir="$(mktemp -d "${"$"}{TMPDIR:-/tmp}/t3-code-live-mount.XXXXXX")"
-hdiutil attach "$dmg_path" -nobrowse -readonly -mountpoint "$mount_dir" -quiet
-source_app="$mount_dir/T3 Code Live (Nightly).app"
+source_app="$local_output_dir/T3 Code Live (Nightly).app"
 if [ ! -d "$source_app" ]; then
-  printf 'The DMG does not contain T3 Code Live (Nightly).app.\n'
+  printf 'The rebuilt application bundle could not be located.\n'
   exit 66
 fi
 if [ "$(plutil -extract CFBundleIdentifier raw "$source_app/Contents/Info.plist")" != 'com.stanman.t3codelive' ]; then
@@ -124,9 +136,15 @@ codesign --verify --deep --strict "$source_app"
 stage_app="/Applications/.T3 Code Live (Nightly).app.new-$$"
 ditto "$source_app" "$stage_app"
 codesign --verify --deep --strict "$stage_app"
-hdiutil detach "$mount_dir" -quiet
-rmdir "$mount_dir" 2>/dev/null || true
-mount_dir=""
+
+if [ "$(git rev-parse HEAD)" != "$source_sha" ] || [ -n "$(git status --porcelain=v1)" ]; then
+  printf 'T3 Code Live source changed during the rebuild. The running app was left unchanged.\n'
+  exit 75
+fi
+if [ "$(git rev-parse origin/main)" != "$source_sha" ]; then
+  printf 'origin/main changed during the rebuild. The running app was left unchanged.\n'
+  exit 75
+fi
 
 osascript -e 'tell application id "com.stanman.t3codelive" to quit' || true
 for _ in {1..80}; do
@@ -143,6 +161,9 @@ fi
 mv "$stage_app" "$target_app"
 stage_app=""
 installed=1
+if ! git update-ref refs/t3-code-live/installed "$source_sha"; then
+  printf 'Warning: the installed-source marker could not be updated.\n'
+fi
 open "$target_app"
 printf '[%s] Rebuild installed; T3 Code Live (Nightly) reopened. Previous bundle: %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$backup_app"
 `;

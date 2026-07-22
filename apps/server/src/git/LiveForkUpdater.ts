@@ -1,10 +1,18 @@
+import * as NodeFS from "node:fs";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
+
 import * as Effect from "effect/Effect";
 
 import type { LiveForkUpdateResult } from "@t3tools/contracts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 
 const EXPECTED_UPSTREAM_URL = "https://github.com/pingdotgg/t3code.git";
+const EXPECTED_ORIGIN_URL = "https://github.com/StanMan007/t3-code-live.git";
 const UPSTREAM_REF = "upstream/main";
+const ORIGIN_REF = "origin/main";
+const INSTALLED_REF = "refs/t3-code-live/installed";
+const REBUILD_LOCK_DIR = NodePath.join(NodeOS.tmpdir(), "t3-code-live-rebuild.lock");
 
 interface LiveForkInspection {
   readonly result: LiveForkUpdateResult;
@@ -46,6 +54,12 @@ const inspect = Effect.fn("LiveForkUpdater.inspect")(function* (
     true,
   );
   const upstreamUrl = upstreamUrlResult.exitCode === 0 ? upstreamUrlResult.stdout.trim() : null;
+  const originUrlResult = yield* run(
+    "LiveForkUpdater.originUrl",
+    ["remote", "get-url", "origin"],
+    true,
+  );
+  const originUrl = originUrlResult.exitCode === 0 ? originUrlResult.stdout.trim() : null;
   const currentShaResult = yield* run(
     "LiveForkUpdater.currentSha",
     ["rev-parse", "--short=12", "HEAD"],
@@ -67,7 +81,7 @@ const inspect = Effect.fn("LiveForkUpdater.inspect")(function* (
   ]);
   const dirty = statusResult.stdout.length > 0;
 
-  if (upstreamUrl !== EXPECTED_UPSTREAM_URL) {
+  if (upstreamUrl !== EXPECTED_UPSTREAM_URL || originUrl !== EXPECTED_ORIGIN_URL) {
     return {
       dirty,
       result: {
@@ -75,16 +89,24 @@ const inspect = Effect.fn("LiveForkUpdater.inspect")(function* (
         branch,
         currentSha,
         upstreamSha: null,
+        originSha: null,
+        installedSha: null,
         localAhead: 0,
         upstreamAhead: 0,
+        localAheadOrigin: 0,
+        originAhead: 0,
         conflictingFiles,
-        detail: `The upstream remote must be ${EXPECTED_UPSTREAM_URL}.`,
+        detail:
+          upstreamUrl !== EXPECTED_UPSTREAM_URL
+            ? `The upstream remote must be ${EXPECTED_UPSTREAM_URL}.`
+            : `The origin remote must be ${EXPECTED_ORIGIN_URL}.`,
       },
     } satisfies LiveForkInspection;
   }
 
   if (options.fetch) {
     yield* run("LiveForkUpdater.fetch", ["fetch", "--prune", "upstream", "main"]);
+    yield* run("LiveForkUpdater.fetchOrigin", ["fetch", "--prune", "origin", "main"]);
   }
 
   const upstreamShaResult = yield* run(
@@ -94,7 +116,20 @@ const inspect = Effect.fn("LiveForkUpdater.inspect")(function* (
   );
   const upstreamSha =
     upstreamShaResult.exitCode === 0 ? upstreamShaResult.stdout.trim() || null : null;
-  if (upstreamSha === null || currentSha === null) {
+  const originShaResult = yield* run(
+    "LiveForkUpdater.originSha",
+    ["rev-parse", "--short=12", ORIGIN_REF],
+    true,
+  );
+  const originSha = originShaResult.exitCode === 0 ? originShaResult.stdout.trim() || null : null;
+  const installedShaResult = yield* run(
+    "LiveForkUpdater.installedSha",
+    ["rev-parse", "--short=12", INSTALLED_REF],
+    true,
+  );
+  const installedSha =
+    installedShaResult.exitCode === 0 ? installedShaResult.stdout.trim() || null : null;
+  if (upstreamSha === null || originSha === null || currentSha === null) {
     return {
       dirty,
       result: {
@@ -102,8 +137,12 @@ const inspect = Effect.fn("LiveForkUpdater.inspect")(function* (
         branch,
         currentSha,
         upstreamSha,
+        originSha,
+        installedSha,
         localAhead: 0,
         upstreamAhead: 0,
+        localAheadOrigin: 0,
+        originAhead: 0,
         conflictingFiles,
         detail: "The fork or upstream commit could not be resolved.",
       },
@@ -117,23 +156,52 @@ const inspect = Effect.fn("LiveForkUpdater.inspect")(function* (
     `HEAD...${UPSTREAM_REF}`,
   ]);
   const divergence = parseDivergence(divergenceResult.stdout);
+  const originDivergenceResult = yield* run("LiveForkUpdater.originDivergence", [
+    "rev-list",
+    "--left-right",
+    "--count",
+    `${ORIGIN_REF}...HEAD`,
+  ]);
+  const originDivergence = parseDivergence(originDivergenceResult.stdout);
+  const originAhead = originDivergence.localAhead;
+  const localAheadOrigin = originDivergence.upstreamAhead;
   const result: LiveForkUpdateResult = {
     status:
       conflictingFiles.length > 0
         ? "needs_agent"
-        : divergence.upstreamAhead > 0
-          ? "available"
-          : "current",
+        : branch !== "main" || originAhead > 0
+          ? "needs_agent"
+          : divergence.upstreamAhead > 0
+            ? "available"
+            : localAheadOrigin > 0
+              ? "sync_pending"
+              : installedSha !== null && installedSha !== currentSha
+                ? "install_pending"
+                : "current",
     branch,
     currentSha,
     upstreamSha,
+    originSha,
+    installedSha,
     ...divergence,
+    localAheadOrigin,
+    originAhead,
     conflictingFiles,
     ...(conflictingFiles.length > 0
       ? { detail: "The upstream merge has conflicts that need agent assistance." }
       : branch !== "main"
         ? { detail: "Switch to main before updating T3 Code Live." }
-        : {}),
+        : originAhead > 0
+          ? {
+              detail: `origin/main has ${originAhead} commit${originAhead === 1 ? "" : "s"} that local main does not contain. An agent should reconcile the fork before syncing upstream.`,
+            }
+          : localAheadOrigin > 0 && divergence.upstreamAhead === 0
+            ? {
+                detail: `${localAheadOrigin} local commit${localAheadOrigin === 1 ? " is" : "s are"} ready to sync to origin/main.`,
+              }
+            : installedSha !== null && installedSha !== currentSha
+              ? { detail: "The installed app was built from an older source commit." }
+              : {}),
   };
 
   return { dirty, result } satisfies LiveForkInspection;
@@ -151,6 +219,13 @@ export const merge = Effect.fn("LiveForkUpdater.merge")(function* (cwd: string) 
   if (before.status === "unavailable" || before.status === "needs_agent") {
     return before;
   }
+  if (NodeFS.existsSync(REBUILD_LOCK_DIR)) {
+    return {
+      ...before,
+      status: "unavailable",
+      detail: "A T3 Code Live rebuild is in progress. Wait for it to finish before syncing source.",
+    } satisfies LiveForkUpdateResult;
+  }
   if (before.branch !== "main") {
     return {
       ...before,
@@ -158,96 +233,90 @@ export const merge = Effect.fn("LiveForkUpdater.merge")(function* (cwd: string) 
       detail: "The automatic updater only merges while the fork is on main.",
     } satisfies LiveForkUpdateResult;
   }
-  if (before.upstreamAhead === 0) {
-    return { ...before, status: "current" } satisfies LiveForkUpdateResult;
-  }
-
-  let preservedLocalFileCount = 0;
   if (inspection.dirty) {
-    const run = (operation: string, args: ReadonlyArray<string>) =>
-      git.execute({ operation, cwd, args, allowNonZeroExit: false });
-
-    // A merge commit snapshots the index, so anything pre-staged would be
-    // silently folded into the update commit. Only an agent can sort that out.
-    const stagedResult = yield* run("LiveForkUpdater.stagedFiles", [
-      "diff",
-      "--name-only",
-      "--cached",
-      "-z",
-    ]);
-    if (splitNullSeparated(stagedResult.stdout).length > 0) {
-      return {
-        ...before,
-        status: "needs_agent",
-        detail:
-          "The fork has staged local changes that a merge commit would absorb. An agent should preserve them before merging upstream.",
-      } satisfies LiveForkUpdateResult;
-    }
-
-    // Git only refuses a merge when it would overwrite uncommitted work. If no
-    // dirty or untracked file intersects what upstream touched since the merge
-    // base, the merge is safe and leaves local edits exactly as they are.
-    const unstagedResult = yield* run("LiveForkUpdater.unstagedFiles", [
-      "diff",
-      "--name-only",
-      "-z",
-    ]);
-    const untrackedResult = yield* run("LiveForkUpdater.untrackedFiles", [
-      "ls-files",
-      "--others",
-      "--exclude-standard",
-      "-z",
-    ]);
-    const localFiles = new Set([
-      ...splitNullSeparated(unstagedResult.stdout),
-      ...splitNullSeparated(untrackedResult.stdout),
-    ]);
-    const upstreamTouchedResult = yield* run("LiveForkUpdater.upstreamTouchedFiles", [
-      "diff",
-      "--name-only",
-      "-z",
-      `HEAD...${UPSTREAM_REF}`,
-    ]);
-    const overlap = splitNullSeparated(upstreamTouchedResult.stdout).filter((file) =>
-      localFiles.has(file),
-    );
-    if (overlap.length > 0) {
-      return {
-        ...before,
-        status: "needs_agent",
-        detail: `The fork has local changes to files upstream also modified (${overlap.join(", ")}). An agent should preserve them before merging upstream.`,
-      } satisfies LiveForkUpdateResult;
-    }
-    preservedLocalFileCount = localFiles.size;
-  }
-
-  const mergeResult = yield* git.execute({
-    operation: "LiveForkUpdater.mergeUpstream",
-    cwd,
-    args: ["merge", "--no-edit", UPSTREAM_REF],
-    allowNonZeroExit: true,
-    timeoutMs: 120_000,
-  });
-  const after = yield* inspect(cwd, { fetch: false });
-
-  if (mergeResult.exitCode !== 0) {
     return {
-      ...after.result,
+      ...before,
       status: "needs_agent",
       detail:
-        after.result.conflictingFiles.length > 0
-          ? "The automatic merge stopped on conflicts. Start an agent to preserve Live Thread and finish the merge."
-          : "Git could not complete the automatic merge. Start an agent to inspect and finish it safely.",
+        "The fork has uncommitted local changes. An agent should preserve the intended fork work before syncing upstream.",
     } satisfies LiveForkUpdateResult;
   }
+
+  let mergedUpstream = false;
+  if (before.upstreamAhead > 0) {
+    const mergeResult = yield* git.execute({
+      operation: "LiveForkUpdater.mergeUpstream",
+      cwd,
+      args: ["merge", "--no-edit", UPSTREAM_REF],
+      allowNonZeroExit: true,
+      timeoutMs: 120_000,
+    });
+    const afterMerge = yield* inspect(cwd, { fetch: false });
+
+    if (mergeResult.exitCode !== 0) {
+      return {
+        ...afterMerge.result,
+        status: "needs_agent",
+        detail:
+          afterMerge.result.conflictingFiles.length > 0
+            ? "The automatic merge stopped on conflicts. Start an agent to preserve Live Thread and finish the merge."
+            : "Git could not complete the automatic merge. Start an agent to inspect and finish it safely.",
+      } satisfies LiveForkUpdateResult;
+    }
+    mergedUpstream = true;
+  }
+
+  const beforePush = yield* inspect(cwd, { fetch: false });
+  if (beforePush.result.originAhead > 0 || beforePush.result.conflictingFiles.length > 0) {
+    return {
+      ...beforePush.result,
+      status: "needs_agent",
+      detail: "The fork cannot be fast-forwarded to origin/main without reconciliation.",
+    } satisfies LiveForkUpdateResult;
+  }
+
+  let syncedOrigin = false;
+  if (beforePush.result.localAheadOrigin > 0) {
+    const pushResult = yield* git.execute({
+      operation: "LiveForkUpdater.pushOrigin",
+      cwd,
+      args: ["push", "origin", "HEAD:main"],
+      allowNonZeroExit: true,
+      timeoutMs: 120_000,
+    });
+    if (pushResult.exitCode !== 0) {
+      return {
+        ...beforePush.result,
+        status: "unavailable",
+        detail:
+          "The source merge completed, but origin/main could not be fast-forwarded. Retry the sync after checking GitHub authentication and connectivity.",
+      } satisfies LiveForkUpdateResult;
+    }
+    syncedOrigin = true;
+  }
+
+  const after = yield* inspect(cwd, { fetch: syncedOrigin });
+  if (
+    after.result.originAhead > 0 ||
+    after.result.localAheadOrigin > 0 ||
+    after.result.currentSha !== after.result.originSha
+  ) {
+    return {
+      ...after.result,
+      status: "unavailable",
+      detail: "origin/main did not match local main after the push completed.",
+    } satisfies LiveForkUpdateResult;
+  }
+
+  if (!mergedUpstream && !syncedOrigin) return after.result;
 
   return {
     ...after.result,
     status: "merged",
-    detail: `Merged ${before.upstreamAhead} upstream commit${before.upstreamAhead === 1 ? "" : "s"}.${
-      preservedLocalFileCount > 0
-        ? ` Local edits to ${preservedLocalFileCount} file${preservedLocalFileCount === 1 ? "" : "s"} were left untouched.`
+    detail: `${
+      mergedUpstream
+        ? `Merged ${before.upstreamAhead} upstream commit${before.upstreamAhead === 1 ? "" : "s"}. `
         : ""
-    }`,
+    }${syncedOrigin ? "Synced origin/main." : ""}`.trim(),
   } satisfies LiveForkUpdateResult;
 });

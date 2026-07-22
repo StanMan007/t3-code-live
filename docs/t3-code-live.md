@@ -27,10 +27,20 @@ Keep `upstream` pointed at `pingdotgg/t3code` and merge upstream changes into th
 ```sh
 git fetch upstream
 git merge upstream/main
-vp check
-vp run typecheck
-vp test
+git push origin HEAD:main
 ```
+
+The sidebar's **Check for updates** control performs this as one guarded source-sync action. It
+fetches both remotes, merges `upstream/main` when needed, and fast-forwards `origin/main`. It never
+rebases or force-pushes. If Git reports conflicts, the repair agent receives only the conflicted
+files and finishes the merge without running lint, typecheck, tests, builds, or unrelated review.
+
+Source sync and app installation are intentionally separate. After source and `origin/main` match,
+the power control builds and installs that exact clean commit. This local-only path creates the
+signed unpacked `.app` directly; it does not spend time generating release DMG or ZIP archives. The rebuild records
+`refs/t3-code-live/installed`; the updater uses that local ref to distinguish “source current” from
+“installed app current.” A rebuild aborts rather than installing a stale package if `HEAD`, the
+working tree, or `origin/main` changes while packaging is in progress.
 
 The scheduled `upstream-compatibility.yml` workflow opens a compatibility PR when upstream advances. It never merges or publishes automatically. Conflicts should normally be limited to these intentional seams:
 

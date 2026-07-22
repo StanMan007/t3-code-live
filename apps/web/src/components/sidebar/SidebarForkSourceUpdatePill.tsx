@@ -164,22 +164,26 @@ export function SidebarForkSourceUpdatePill() {
 
     setPhase("verifying_agent");
     void (async () => {
-      const checkResult = await checkUpdate({
+      const syncResult = await mergeUpdate({
         environmentId: sourceProject.environmentId,
         input: { cwd: sourceProject.workspaceRoot },
       });
-      if (checkResult._tag === "Success") {
-        setResult(checkResult.value);
+      if (syncResult._tag === "Success") {
+        setResult(syncResult.value);
         const verified =
-          checkResult.value.upstreamAhead === 0 &&
-          checkResult.value.conflictingFiles.length === 0 &&
-          (checkResult.value.status === "current" || checkResult.value.status === "merged");
+          syncResult.value.upstreamAhead === 0 &&
+          syncResult.value.originAhead === 0 &&
+          syncResult.value.localAheadOrigin === 0 &&
+          syncResult.value.conflictingFiles.length === 0 &&
+          (syncResult.value.status === "current" ||
+            syncResult.value.status === "merged" ||
+            syncResult.value.status === "install_pending");
         setPhase(verified ? "restart_ready" : "agent_review");
         return;
       }
       setPhase("agent_review");
     })();
-  }, [checkUpdate, phase, repairAgentLifecycle, sourceProject]);
+  }, [mergeUpdate, phase, repairAgentLifecycle, sourceProject]);
 
   useEffect(() => {
     const shouldPrompt =
@@ -313,8 +317,8 @@ export function SidebarForkSourceUpdatePill() {
       if (mergeResult.value.status === "merged") {
         toastManager.add({
           type: "success",
-          title: "T3 Code Live source updated",
-          description: `${mergeResult.value.detail ?? "The upstream merge completed."} Rebuild the app when you are ready to install it.`,
+          title: "T3 Code Live source synced",
+          description: `${mergeResult.value.detail ?? "Local main and origin/main are synchronized."} Rebuild the app when you are ready to install it.`,
         });
       }
       return;
@@ -347,7 +351,7 @@ export function SidebarForkSourceUpdatePill() {
     view.busy || view.action === "none" || agentUnavailable || agentResultUnavailable;
   const handleAction = () => {
     if (view.action === "check") {
-      void runCheck(true);
+      void runAutomaticMerge();
     } else if (view.action === "merge") {
       void runAutomaticMerge();
     } else if (view.action === "agent") {

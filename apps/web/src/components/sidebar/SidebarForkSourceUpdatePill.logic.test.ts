@@ -17,8 +17,12 @@ function result(
     branch: "main",
     currentSha: "abc123",
     upstreamSha: "def456",
+    originSha: "abc123",
+    installedSha: "abc123",
     localAhead: 5,
     upstreamAhead,
+    localAheadOrigin: 0,
+    originAhead: 0,
     conflictingFiles:
       status === "needs_agent" ? ["apps/web/src/components/chat/ChatComposer.tsx"] : [],
   };
@@ -59,7 +63,7 @@ describe("getForkUpdatePillView", () => {
   it("keeps the same badge occupied while merging", () => {
     expect(getForkUpdatePillView(result("available"), "merging")).toMatchObject({
       tone: "primary",
-      title: "Merging update…",
+      title: "Checking and syncing…",
       busy: true,
       action: "none",
     });
@@ -104,6 +108,20 @@ describe("getForkUpdatePillView", () => {
   it("also offers restart after a clean automatic merge", () => {
     expect(getForkUpdatePillView(result("merged"), "idle")).toMatchObject({
       title: "Restart to apply update",
+      action: "rebuild",
+    });
+  });
+
+  it("separates GitHub sync from installing newer local source", () => {
+    expect(
+      getForkUpdatePillView({ ...result("sync_pending", 0), localAheadOrigin: 4 }, "idle"),
+    ).toMatchObject({
+      title: "Sync fork to GitHub",
+      trailingLabel: "4 local",
+      action: "merge",
+    });
+    expect(getForkUpdatePillView(result("install_pending", 0), "idle")).toMatchObject({
+      title: "Restart to apply local source",
       action: "rebuild",
     });
   });

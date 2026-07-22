@@ -47,8 +47,8 @@ export function getForkUpdatePillView(
   if (phase === "merging") {
     return {
       tone: "primary",
-      title: "Merging update…",
-      description: "Fetching and merging upstream/main into the T3 Code Live fork.",
+      title: "Checking and syncing…",
+      description: "Fetching upstream, merging when needed, and syncing origin/main.",
       action: "none",
       busy: true,
       dismissible: false,
@@ -140,6 +140,27 @@ export function getForkUpdatePillView(
       title: "Restart to apply update",
       description: `${result.detail ?? "T3 Code Live now contains the latest upstream source."} Rebuild and relaunch the signed app.`,
       action: "rebuild",
+      busy: false,
+      dismissible: false,
+    };
+  }
+  if (result.status === "install_pending") {
+    return {
+      tone: "primary",
+      title: "Restart to apply local source",
+      description: result.detail ?? "The installed app was built from an older source commit.",
+      action: "rebuild",
+      busy: false,
+      dismissible: false,
+    };
+  }
+  if (result.status === "sync_pending") {
+    return {
+      tone: "primary",
+      title: "Sync fork to GitHub",
+      trailingLabel: `${result.localAheadOrigin} local`,
+      description: result.detail ?? "Local main contains commits that are not yet on origin/main.",
+      action: "merge",
       busy: false,
       dismissible: false,
     };
