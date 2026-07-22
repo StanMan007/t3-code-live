@@ -316,12 +316,10 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
     background: color-mix(in srgb, var(--card) 20%, transparent);
   }
 
-  /* Mix from --background (not --card): the lower chrome is a full-width
-     strip over the main view, and a card-tinted wash reads as a lighter
-     seam against it when no content is scrolled underneath. The backdrop
-     blur, not the tint, carries the frosted effect. */
+  /* Keep the run-context strip opaque so scrolled conversation text cannot
+     show through beneath the composer controls. */
   .chat-composer-lower-chrome {
-    background: color-mix(in srgb, var(--background) 20%, transparent);
+    background: var(--background);
   }
 
   .chat-composer-glass {
@@ -340,7 +338,7 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
   }
 
   .dark .chat-composer-lower-chrome {
-    background: color-mix(in srgb, var(--background) 45%, transparent);
+    background: var(--background);
   }
 
   .dark .chat-composer-glass {
