@@ -336,7 +336,7 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
   }
 
   .dark .chat-composer-glass {
-    background: color-mix(in srgb, var(--card) 45%, transparent);
+    background: color-mix(in srgb, var(--background) 92%, var(--color-white));
   }
 
   .dark .chat-composer-lower-chrome {
