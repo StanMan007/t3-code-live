@@ -12,11 +12,11 @@ import { formatLiveForkFeatureContracts } from "./liveForkFeatures";
 
 const LIVE_FORK_OWNER = "stanman007";
 const LIVE_FORK_REPOSITORY = "t3-code-live";
+const LIVE_FORK_DIRECTORY_NAMES = new Set(["t3-code-live", "t3code"]);
 const PREFERRED_UPDATE_MODELS = ["gpt-5.6-sol", "gpt-5.6"] as const;
 export const LIVE_FORK_UPDATE_READY_MARKER = "T3_CODE_LIVE_UPDATE_READY";
 export const LIVE_FORK_UPDATE_BLOCKED_MARKER = "T3_CODE_LIVE_UPDATE_BLOCKED";
-export const LIVE_FORK_UPDATE_DECISION_REQUIRED_MARKER =
-  "T3_CODE_LIVE_UPDATE_DECISION_REQUIRED";
+export const LIVE_FORK_UPDATE_DECISION_REQUIRED_MARKER = "T3_CODE_LIVE_UPDATE_DECISION_REQUIRED";
 
 type ForkUpdateProvider = Pick<
   ServerProvider,
@@ -51,14 +51,15 @@ export function findLiveForkSourceProject(
   const ranked = projects
     .filter(
       (project) =>
-        isLiveForkRepository(project) || normalizedPathBasename(project.workspaceRoot) === "t3code",
+        isLiveForkRepository(project) ||
+        LIVE_FORK_DIRECTORY_NAMES.has(normalizedPathBasename(project.workspaceRoot)),
     )
     .map((project) => ({
       project,
       score:
         (isLiveForkRepository(project) ? 4 : 0) +
         (project.environmentId === primaryEnvironmentId ? 2 : 0) +
-        (normalizedPathBasename(project.workspaceRoot) === "t3code" ? 1 : 0),
+        (LIVE_FORK_DIRECTORY_NAMES.has(normalizedPathBasename(project.workspaceRoot)) ? 1 : 0),
     }))
     .sort((left, right) => right.score - left.score);
 
@@ -142,9 +143,10 @@ export function buildLiveForkMergeRepairPrompt(input: {
           : input.updateResult.mergeActive
             ? "an active merge needs inspection"
             : "Git needs inspection before the upstream merge can continue";
-  const conflictSummary = input.updateResult.conflictingFiles.length > 0
-    ? input.updateResult.conflictingFiles.map((file) => `  - ${file}`).join("\n")
-    : "  - None reported. Do not assume that a merge is active.";
+  const conflictSummary =
+    input.updateResult.conflictingFiles.length > 0
+      ? input.updateResult.conflictingFiles.map((file) => `  - ${file}`).join("\n")
+      : "  - None reported. Do not assume that a merge is active.";
   const dirtySummary =
     input.updateResult.dirtyFiles.length > 0
       ? input.updateResult.dirtyFiles.map((file) => `  - ${file}`).join("\n")
