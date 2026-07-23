@@ -98,7 +98,7 @@ cleanup() {
   fi
   if [ "$installed" -eq 0 ] && [ -n "$backup_app" ] && [ -d "$backup_app" ] && [ ! -e "$target_app" ]; then
     mv "$backup_app" "$target_app" || true
-    open -n "$target_app" || true
+    open "$target_app" || true
   fi
   if [ -n "$stage_app" ] && [ -d "$stage_app" ]; then
     mv "$stage_app" "${"$"}{TMPDIR:-/tmp}/T3 Code Live failed-stage-$$.app" || true
@@ -171,6 +171,9 @@ if [ "$build_mode" = "renderer" ]; then
   previous_client="$local_output_dir/client.previous"
   mv "$source_app/Contents/Resources/app.asar.unpacked/apps/server/dist/client" "$previous_client"
   cp -cR apps/server/dist/client "$source_app/Contents/Resources/app.asar.unpacked/apps/server/dist/client"
+  node scripts/refresh-unpacked-asar-metadata.ts \
+    "$source_app/Contents/Resources/app.asar" \
+    apps/server/dist/client
   codesign --force --sign 'Apple Development: Jonathan Stanley (P8U8347VLY)' \
     --timestamp=none \
     --entitlements "$entitlements_path" \
@@ -237,7 +240,7 @@ write_status relaunching "The signed app was replaced and is reopening."
 reopened=0
 for attempt in 1 2 3; do
   printf 'Opening rebuilt T3 Code Live (attempt %s of 3).\n' "$attempt"
-  open -n "$target_app" || true
+  open "$target_app" || true
   for _ in {1..40}; do
     if is_app_running; then
       reopened=1
@@ -265,7 +268,7 @@ if [ "$reopened" -ne 1 ]; then
   mv "$target_app" "$failed_app"
   mv "$backup_app" "$target_app"
   backup_app=""
-  open -n "$target_app" || true
+  open "$target_app" || true
   printf 'The rebuilt app could not be reopened. The previous app was restored and a relaunch was requested. Failed bundle: %s\n' "$failed_app"
   exit 70
 fi

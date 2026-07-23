@@ -86,6 +86,7 @@ describe("LiveForkRebuilder", () => {
       assert.match(spawned.args[1] ?? "", /origin\/main changed during the rebuild/u);
       assert.match(spawned.args[1] ?? "", /refs\/t3-code-live\/installed/u);
       assert.match(spawned.args[1] ?? "", /Using fast renderer refresh/u);
+      assert.match(spawned.args[1] ?? "", /refresh-unpacked-asar-metadata\.ts/u);
       assert.match(spawned.args[1] ?? "", /git diff --name-only/u);
       assert.match(spawned.args[1] ?? "", /apps\/web\/\*/u);
       assert.match(spawned.args[1] ?? "", /vp run --filter t3 build/u);
@@ -95,16 +96,14 @@ describe("LiveForkRebuilder", () => {
       assert.match(spawned.args[1] ?? "", /--entitlements "\$entitlements_path"/u);
       assert.match(spawned.args[1] ?? "", /codesign --force --sign/u);
       assert.match(spawned.args[1] ?? "", /Using full desktop rebuild/u);
-      assert.match(spawned.args[1] ?? "", /open -n "\$target_app"/u);
+      assert.match(spawned.args[1] ?? "", /open "\$target_app"/u);
+      assert.notMatch(spawned.args[1] ?? "", /open -n/u);
       assert.match(spawned.args[1] ?? "", /attempt %s of 3/u);
       assert.match(spawned.args[1] ?? "", /verified running/u);
       assert.match(spawned.args[1] ?? "", /did not quit in time/u);
       assert.match(spawned.args[1] ?? "", /trying its executable directly/u);
       assert.match(spawned.args[1] ?? "", /previous app was restored/u);
-      assert.match(
-        spawned.args[1] ?? "",
-        /application id "com\.stanman\.t3codelive" is running/u,
-      );
+      assert.match(spawned.args[1] ?? "", /application id "com\.stanman\.t3codelive" is running/u);
       assert.notMatch(spawned.args[1] ?? "", /grep -Fqx "\$app_executable"/u);
       assert.match(spawned.args[1] ?? "", /write_status complete/u);
       assert.equal(didUnref, true);
