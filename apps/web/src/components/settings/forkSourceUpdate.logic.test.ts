@@ -64,6 +64,25 @@ describe("findLiveForkSourceProject", () => {
 
     expect(findLiveForkSourceProject([source], primaryEnvironmentId)).toBe(source);
   });
+
+  it("recognizes the canonical fork directory when repository identity prefers upstream", () => {
+    const source = project({
+      environmentId: primaryEnvironmentId,
+      workspaceRoot: "/Users/example/Projects/t3-code-live",
+      repositoryIdentity: {
+        canonicalKey: "github.com/pingdotgg/t3code",
+        locator: {
+          source: "git-remote",
+          remoteName: "upstream",
+          remoteUrl: "https://github.com/pingdotgg/t3code.git",
+        },
+        owner: "pingdotgg",
+        name: "t3code",
+      },
+    });
+
+    expect(findLiveForkSourceProject([source], primaryEnvironmentId)).toBe(source);
+  });
 });
 
 describe("buildLiveForkMergeRepairPrompt", () => {
