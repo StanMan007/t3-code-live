@@ -2576,25 +2576,17 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   planSidebarLabel={planSidebarLabel}
                   planSidebarOpen={planSidebarOpen}
                   runContextControls={runContextControls}
+                  runtimeModeControl={
+                    <ComposerRuntimeModeControl
+                      runtimeMode={runtimeMode}
+                      onRuntimeModeChange={handleRuntimeModeChange}
+                    />
+                  }
                   showInteractionModeToggle={composerProviderControls.showInteractionModeToggle}
                   traitsPicker={providerTraitsPicker}
                   onToggleInteractionMode={toggleInteractionMode}
                   onTogglePlanSidebar={togglePlanSidebar}
                 />
-                <ComposerRuntimeModeControl
-                  runtimeMode={runtimeMode}
-                  onRuntimeModeChange={handleRuntimeModeChange}
-                />
-              </div>
-
-              {/* Right side: model / reasoning, live controls, and send / stop button */}
-              <div
-                data-chat-composer-actions="right"
-                data-chat-composer-primary-actions-compact={
-                  isComposerPrimaryActionsCompact ? "true" : "false"
-                }
-                className="relative flex min-w-0 shrink-0 flex-nowrap items-center justify-end gap-1 sm:gap-2"
-              >
                 {noProviderAvailable ? (
                   <Button
                     type="button"
@@ -2610,6 +2602,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                 ) : (
                   <ProviderModelPicker
                     compact
+                    compactProviderLabel
                     activeInstanceId={selectedInstanceId}
                     model={selectedModelForPickerWithCustomFallback}
                     lockedProvider={lockedProvider}
@@ -2618,9 +2611,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     keybindings={keybindings}
                     modelOptionsByInstance={modelOptionsByInstance}
                     secondaryLabel={composerProviderState.promptEffortLabel}
-                    showProviderIcon={false}
-                    popupAlign="end"
-                    triggerClassName="justify-end px-1.5 sm:px-2"
+                    popupAlign="start"
+                    triggerClassName="justify-start px-1.5 sm:px-2"
                     terminalOpen={terminalOpen}
                     open={isComposerModelPickerOpen}
                     {...(composerProviderState.modelPickerIconClassName
@@ -2636,7 +2628,16 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     onInstanceModelChange={onProviderModelSelect}
                   />
                 )}
+              </div>
 
+              {/* Right side: live controls and send / stop button */}
+              <div
+                data-chat-composer-actions="right"
+                data-chat-composer-primary-actions-compact={
+                  isComposerPrimaryActionsCompact ? "true" : "false"
+                }
+                className="relative flex min-w-0 shrink-0 flex-nowrap items-center justify-end gap-1 sm:gap-2"
+              >
                 <LiveThreadControl
                   environmentId={environmentId}
                   threadRef={routeThreadRef}

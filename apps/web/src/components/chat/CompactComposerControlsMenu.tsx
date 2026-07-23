@@ -10,6 +10,7 @@ export const CompactComposerControlsMenu = memo(function CompactComposerControls
   planSidebarLabel: string;
   planSidebarOpen: boolean;
   runContextControls?: ReactNode;
+  runtimeModeControl?: ReactNode;
   showInteractionModeToggle: boolean;
   traitsPicker?: ReactNode;
   onToggleInteractionMode: () => void;
@@ -33,8 +34,16 @@ export const CompactComposerControlsMenu = memo(function CompactComposerControls
       <PopoverPopup align="start" side="top" className="w-72" viewportClassName="grid gap-2 p-2">
         {props.runContextControls}
 
-        {props.runContextControls && (props.traitsPicker || props.showInteractionModeToggle) ? (
+        {props.runContextControls &&
+        (props.runtimeModeControl || props.traitsPicker || props.showInteractionModeToggle) ? (
           <div className="mx-1 h-px bg-border/60" />
+        ) : null}
+
+        {props.runtimeModeControl ? (
+          <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-md px-2 py-1">
+            <span className="text-muted-foreground text-xs">Access</span>
+            {props.runtimeModeControl}
+          </div>
         ) : null}
 
         {props.traitsPicker ? (

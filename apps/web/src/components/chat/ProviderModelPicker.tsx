@@ -14,6 +14,7 @@ import { ModelPickerContent } from "./ModelPickerContent";
 import { ProviderInstanceIcon } from "./ProviderInstanceIcon";
 import {
   ModelEsque,
+  getCompactComposerModelName,
   getTriggerDisplayModelLabel,
   getTriggerDisplayModelName,
 } from "./providerIconUtils";
@@ -33,6 +34,7 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
   keybindings?: ResolvedKeybindingsConfig;
   modelOptionsByInstance: ReadonlyMap<ProviderInstanceId, ReadonlyArray<ModelEsque>>;
   activeProviderIconClassName?: string;
+  compactProviderLabel?: boolean;
   secondaryLabel?: string | null;
   showProviderIcon?: boolean;
   popupAlign?: "start" | "center" | "end";
@@ -67,7 +69,11 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
   const selectedModel =
     selectedInstanceOptions.find((option) => option.slug === props.model) ??
     selectedInstanceOptions[0];
-  const triggerTitle = selectedModel ? getTriggerDisplayModelName(selectedModel) : props.model;
+  const triggerTitle = selectedModel
+    ? props.compactProviderLabel && activeEntry
+      ? getCompactComposerModelName(selectedModel, activeEntry.driverKind)
+      : getTriggerDisplayModelName(selectedModel)
+    : props.model;
   const triggerLabel = selectedModel ? getTriggerDisplayModelLabel(selectedModel) : props.model;
   const duplicateDriverCount = props.instanceEntries.filter(
     (entry) => activeEntry !== null && entry.driverKind === activeEntry.driverKind,

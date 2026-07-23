@@ -54,6 +54,20 @@ export function getTriggerDisplayModelName(model: ModelEsque): string {
   return getDisplayModelName(model, { preferShortName: true });
 }
 
+export function getCompactComposerModelName(
+  model: ModelEsque,
+  provider: ProviderDriverKind,
+): string {
+  const name = getTriggerDisplayModelName(model);
+  if (provider === ProviderDriverKind.make("codex")) {
+    return name.replace(/^GPT(?:[-\s]+)?/iu, "").replaceAll("-", " ");
+  }
+  if (provider === ProviderDriverKind.make("claudeAgent")) {
+    return name.replace(/^Claude\s+/iu, "");
+  }
+  return name;
+}
+
 export function getTriggerDisplayModelLabel(model: ModelEsque): string {
   return getTriggerDisplayModelName(model);
 }
