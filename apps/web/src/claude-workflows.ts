@@ -9,6 +9,7 @@ export type ClaudeWorkflowStatus =
   | "stopped";
 
 export type ClaudeWorkflowModelProvider = "claude" | "openai" | null;
+export type ClaudeWorkflowDelegationState = "requested" | "result_received";
 
 export function inferClaudeWorkflowModelProvider(
   model: string | null | undefined,
@@ -24,6 +25,35 @@ export function inferClaudeWorkflowModelProvider(
   return null;
 }
 
+export function formatWorkflowModelName(
+  model: string | null | undefined,
+  fallback = "Model",
+): string {
+  const value = model?.trim();
+  if (!value) return fallback;
+
+  const normalized = value.toLowerCase();
+  const familyMatch = normalized.match(
+    /(?:^|[/:._-])(fable|sonnet|opus|haiku)[-_ ]?(\d+(?:[.-]\d+)*)/,
+  );
+  if (familyMatch) {
+    const family = familyMatch[1]!;
+    const version = familyMatch[2]?.replaceAll("-", ".");
+    return `${family.charAt(0).toUpperCase()}${family.slice(1)}${version ? ` ${version}` : ""}`;
+  }
+
+  const gptMatch = normalized.match(/(?:^|[/:._-])gpt[-_ ]?(\d+(?:[.-]\d+)*)(?:[-_ ](sol))?/);
+  if (gptMatch) {
+    const version = gptMatch[1]?.replaceAll("-", ".");
+    return `GPT-${version}${gptMatch[2] ? "-Sol" : ""}`;
+  }
+
+  return value
+    .replace(/^anthropic[/:._-]+/i, "")
+    .replace(/^claude[/:._-]+/i, "")
+    .replace(/^openai[/:._-]+/i, "");
+}
+
 export interface ClaudeWorkflowAgent {
   id: string;
   title: string;
@@ -35,8 +65,21 @@ export interface ClaudeWorkflowAgent {
   delegatedProvider?: Exclude<ClaudeWorkflowModelProvider, null>;
   delegatedReasoningEffort?: string;
   delegatedVia?: string;
+  delegationState?: ClaudeWorkflowDelegationState;
+  claudeWrapperPrompt?: string;
+  delegatedToolUseId?: string;
+  delegatedPrompt?: string;
+  delegatedToolInput?: string;
+  delegatedSandbox?: string;
+  delegatedApprovalPolicy?: string;
+  delegatedResultPreview?: string;
+  delegatedRawResult?: string;
+  delegatedThreadId?: string;
+  delegatedTokens?: number;
+  delegatedToolUses?: number;
   prompt?: string;
   summary?: string;
+  activitySummary?: string;
   lastToolName?: string;
   recentTools: string[];
   transcriptPath?: string;
@@ -100,6 +143,13 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 
 function readString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function readDelegationState(
+  value: unknown,
+  fallback?: ClaudeWorkflowDelegationState,
+): ClaudeWorkflowDelegationState | undefined {
+  return value === "requested" || value === "result_received" ? value : fallback;
 }
 
 function readNumber(value: unknown): number {
@@ -215,6 +265,16 @@ function normalizeStatus(value: unknown, fallback: ClaudeWorkflowStatus): Claude
   }
   if (value === "killed") return "stopped";
   return fallback;
+}
+
+function preserveTerminalOutcome(
+  previous: ClaudeWorkflowStatus,
+  next: ClaudeWorkflowStatus,
+): ClaudeWorkflowStatus {
+  if ((previous === "completed" || previous === "failed") && next === "stopped") {
+    return previous;
+  }
+  return next;
 }
 
 function workflowAgentStatus(value: unknown): ClaudeWorkflowStatus {
@@ -398,7 +458,10 @@ export function deriveClaudeWorkflowRuns(
     if (run && taskId === run.taskId) {
       if (activity.kind === "task.updated") {
         const patch = asRecord(payload?.patch);
-        run.status = normalizeStatus(patch?.status, run.status);
+        run.status = preserveTerminalOutcome(
+          run.status,
+          normalizeStatus(patch?.status, run.status),
+        );
       } else if (activity.kind === "task.completed") {
         run.status = normalizeStatus(payload?.status, "completed");
         const summary = readString(payload?.summary);
@@ -435,10 +498,41 @@ export function deriveClaudeWorkflowRuns(
           const delegatedReasoningEffort =
             readString(entry?.delegatedReasoningEffort) ?? previous?.delegatedReasoningEffort;
           const delegatedVia = readString(entry?.delegatedVia) ?? previous?.delegatedVia;
+          const delegationState = readDelegationState(
+            entry?.delegationState,
+            previous?.delegationState ??
+              (delegatedProvider && delegatedVia ? "result_received" : undefined),
+          );
+          const claudeWrapperPrompt =
+            readString(entry?.claudeWrapperPrompt) ?? previous?.claudeWrapperPrompt;
+          const delegatedToolUseId =
+            readString(entry?.delegatedToolUseId) ?? previous?.delegatedToolUseId;
+          const delegatedPrompt = readString(entry?.delegatedPrompt) ?? previous?.delegatedPrompt;
+          const delegatedToolInput =
+            readString(entry?.delegatedToolInput) ?? previous?.delegatedToolInput;
+          const delegatedSandbox =
+            readString(entry?.delegatedSandbox) ?? previous?.delegatedSandbox;
+          const delegatedApprovalPolicy =
+            readString(entry?.delegatedApprovalPolicy) ?? previous?.delegatedApprovalPolicy;
+          const delegatedResultPreview =
+            readString(entry?.delegatedResultPreview) ?? previous?.delegatedResultPreview;
+          const delegatedRawResult =
+            readString(entry?.delegatedRawResult) ?? previous?.delegatedRawResult;
+          const delegatedThreadId =
+            readString(entry?.delegatedThreadId) ?? previous?.delegatedThreadId;
+          const delegatedTokensValue = readNumber(entry?.delegatedTokens);
+          const delegatedTokens =
+            delegatedTokensValue > 0 ? delegatedTokensValue : previous?.delegatedTokens;
+          const delegatedToolUsesValue = readNumber(
+            entry?.delegatedToolCalls ?? entry?.delegatedToolUses,
+          );
+          const delegatedToolUses =
+            delegatedToolUsesValue > 0 ? delegatedToolUsesValue : previous?.delegatedToolUses;
           const prompt = readString(entry?.promptPreview) ?? previous?.prompt;
           const result = readString(entry?.resultPreview);
           const toolSummary = readString(entry?.lastToolSummary);
-          const summary = result ?? toolSummary ?? previous?.summary;
+          const summary = result ?? previous?.summary;
+          const activitySummary = toolSummary ?? previous?.activitySummary;
           const lastToolName = readString(entry?.lastToolName) ?? previous?.lastToolName;
           const startedAtMs =
             readTimestampMs(entry?.startedAt) ??
@@ -458,8 +552,21 @@ export function deriveClaudeWorkflowRuns(
             ...(delegatedProvider ? { delegatedProvider } : {}),
             ...(delegatedReasoningEffort ? { delegatedReasoningEffort } : {}),
             ...(delegatedVia ? { delegatedVia } : {}),
+            ...(delegationState ? { delegationState } : {}),
+            ...(claudeWrapperPrompt ? { claudeWrapperPrompt } : {}),
+            ...(delegatedToolUseId ? { delegatedToolUseId } : {}),
+            ...(delegatedPrompt ? { delegatedPrompt } : {}),
+            ...(delegatedToolInput ? { delegatedToolInput } : {}),
+            ...(delegatedSandbox ? { delegatedSandbox } : {}),
+            ...(delegatedApprovalPolicy ? { delegatedApprovalPolicy } : {}),
+            ...(delegatedResultPreview ? { delegatedResultPreview } : {}),
+            ...(delegatedRawResult ? { delegatedRawResult } : {}),
+            ...(delegatedThreadId ? { delegatedThreadId } : {}),
+            ...(delegatedTokens !== undefined ? { delegatedTokens } : {}),
+            ...(delegatedToolUses !== undefined ? { delegatedToolUses } : {}),
             ...(prompt ? { prompt } : {}),
             ...(summary ? { summary } : {}),
+            ...(activitySummary ? { activitySummary } : {}),
             ...(lastToolName ? { lastToolName } : {}),
             recentTools: appendRecentTool(previous?.recentTools, lastToolName),
             tokens: Math.max(previous?.tokens ?? 0, readNumber(entry?.tokens)),
@@ -513,8 +620,38 @@ export function deriveClaudeWorkflowRuns(
       const delegatedReasoningEffort =
         readString(payload?.delegatedReasoningEffort) ?? previous?.delegatedReasoningEffort;
       const delegatedVia = readString(payload?.delegatedVia) ?? previous?.delegatedVia;
+      const delegationState = readDelegationState(
+        payload?.delegationState,
+        previous?.delegationState ??
+          (delegatedProvider && delegatedVia ? "result_received" : undefined),
+      );
+      const claudeWrapperPrompt =
+        readString(payload?.claudeWrapperPrompt) ?? previous?.claudeWrapperPrompt;
+      const delegatedToolUseId =
+        readString(payload?.delegatedToolUseId) ?? previous?.delegatedToolUseId;
+      const delegatedPrompt = readString(payload?.delegatedPrompt) ?? previous?.delegatedPrompt;
+      const delegatedToolInput =
+        readString(payload?.delegatedToolInput) ?? previous?.delegatedToolInput;
+      const delegatedSandbox = readString(payload?.delegatedSandbox) ?? previous?.delegatedSandbox;
+      const delegatedApprovalPolicy =
+        readString(payload?.delegatedApprovalPolicy) ?? previous?.delegatedApprovalPolicy;
+      const delegatedResultPreview =
+        readString(payload?.delegatedResultPreview) ?? previous?.delegatedResultPreview;
+      const delegatedRawResult =
+        readString(payload?.delegatedRawResult) ?? previous?.delegatedRawResult;
+      const delegatedThreadId =
+        readString(payload?.delegatedThreadId) ?? previous?.delegatedThreadId;
+      const delegatedTokensValue = readNumber(payload?.delegatedTokens);
+      const delegatedTokens =
+        delegatedTokensValue > 0 ? delegatedTokensValue : previous?.delegatedTokens;
+      const delegatedToolUsesValue = readNumber(
+        payload?.delegatedToolCalls ?? payload?.delegatedToolUses,
+      );
+      const delegatedToolUses =
+        delegatedToolUsesValue > 0 ? delegatedToolUsesValue : previous?.delegatedToolUses;
       const prompt = readString(payload?.prompt) ?? previous?.prompt;
       const summary = readString(payload?.summary) ?? previous?.summary;
+      const activitySummary = readString(payload?.lastToolSummary) ?? previous?.activitySummary;
       const lastToolName = readString(payload?.lastToolName) ?? previous?.lastToolName;
       const transcriptPath = readString(payload?.transcriptPath) ?? previous?.transcriptPath;
       const activityTimestampMs = readTimestampMs(activity.createdAt);
@@ -527,20 +664,35 @@ export function deriveClaudeWorkflowRuns(
           definition?.agentPhases.get(title) ??
           previous?.phase ??
           "Active agents",
-        status:
+        status: preserveTerminalOutcome(
+          previous?.status ?? "running",
           activity.kind === "task.completed"
             ? normalizeStatus(payload?.status, "completed")
             : activity.kind === "task.updated"
               ? normalizeStatus(asRecord(payload?.patch)?.status, previous?.status ?? "running")
               : "running",
+        ),
         ...(model ? { model } : {}),
         ...(subagentType ? { subagentType } : {}),
         ...(delegatedModel ? { delegatedModel } : {}),
         ...(delegatedProvider ? { delegatedProvider } : {}),
         ...(delegatedReasoningEffort ? { delegatedReasoningEffort } : {}),
         ...(delegatedVia ? { delegatedVia } : {}),
+        ...(delegationState ? { delegationState } : {}),
+        ...(claudeWrapperPrompt ? { claudeWrapperPrompt } : {}),
+        ...(delegatedToolUseId ? { delegatedToolUseId } : {}),
+        ...(delegatedPrompt ? { delegatedPrompt } : {}),
+        ...(delegatedToolInput ? { delegatedToolInput } : {}),
+        ...(delegatedSandbox ? { delegatedSandbox } : {}),
+        ...(delegatedApprovalPolicy ? { delegatedApprovalPolicy } : {}),
+        ...(delegatedResultPreview ? { delegatedResultPreview } : {}),
+        ...(delegatedRawResult ? { delegatedRawResult } : {}),
+        ...(delegatedThreadId ? { delegatedThreadId } : {}),
+        ...(delegatedTokens !== undefined ? { delegatedTokens } : {}),
+        ...(delegatedToolUses !== undefined ? { delegatedToolUses } : {}),
         ...(prompt ? { prompt } : {}),
         ...(summary ? { summary } : {}),
+        ...(activitySummary ? { activitySummary } : {}),
         ...(lastToolName ? { lastToolName } : {}),
         recentTools: appendRecentTool(previous?.recentTools, lastToolName),
         ...(transcriptPath ? { transcriptPath } : {}),

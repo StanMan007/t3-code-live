@@ -392,16 +392,16 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
     z-index: 0;
     inset: 0;
     border-radius: inherit;
-    /* The host spans both the composer and its lower toolbar. Keep that
-       combined surface opaque so timeline content cannot bleed through. */
+    /* Keep the writing surface opaque so timeline content cannot bleed
+       through. Run context is rendered outside this host. */
     background: var(--chat-composer-glass-surface);
     content: "";
   }
 
   .dark .chat-composer-glass-host {
-    --chat-composer-glass-surface: color-mix(in srgb, var(--background) 84%, var(--color-white));
+    --chat-composer-glass-surface: color-mix(in srgb, var(--background) 92%, var(--color-white));
 
-    box-shadow: 0 0 0 1px rgb(255 255 255 / 10%);
+    box-shadow: 0 12px 28px -20px rgb(0 0 0 / 55%);
   }
 
   .alert-glass {

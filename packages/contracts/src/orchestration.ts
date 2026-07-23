@@ -393,6 +393,18 @@ export const OrchestrationProjectShell = Schema.Struct({
 });
 export type OrchestrationProjectShell = typeof OrchestrationProjectShell.Type;
 
+export const OrchestrationActiveWorkflowShell = Schema.Struct({
+  taskId: TrimmedNonEmptyString,
+  name: TrimmedNonEmptyString,
+  state: Schema.Literals(["starting", "waitingForCodex", "finalizing"]),
+  waitingForModel: Schema.optional(TrimmedNonEmptyString),
+  agentCount: NonNegativeInt,
+  requestedCount: NonNegativeInt,
+  resultCount: NonNegativeInt,
+  finalizedCount: NonNegativeInt,
+});
+export type OrchestrationActiveWorkflowShell = typeof OrchestrationActiveWorkflowShell.Type;
+
 export const OrchestrationThreadShell = Schema.Struct({
   id: ThreadId,
   projectId: ProjectId,
@@ -417,6 +429,7 @@ export const OrchestrationThreadShell = Schema.Struct({
   hasPendingApprovals: Schema.Boolean,
   hasPendingUserInput: Schema.Boolean,
   hasActionableProposedPlan: Schema.Boolean,
+  activeWorkflow: Schema.optional(Schema.NullOr(OrchestrationActiveWorkflowShell)),
 });
 export type OrchestrationThreadShell = typeof OrchestrationThreadShell.Type;
 

@@ -105,7 +105,7 @@ const CODEX_AGENT_ROUTING_REMINDER = `MANDATORY CODEX ROUTING CONTRACT:
 - Pin \`config: { "model": "gpt-5.6-sol", "model_reasoning_effort": "high" }\`.
 - Use the packet's absolute \`cwd\`, \`approval-policy: "never"\`, and \`read-only\` for research or \`workspace-write\` for implementation.
 - After the Codex call returns, immediately relay its result. Do not verify it with Claude tools.
-- If the MCP call cannot run, report that Codex was not invoked. Never substitute Claude's own work.`;
+- If the MCP call fails or reports a blocker, relay that blocker. Never retry with broader permissions, escalate the sandbox, or substitute Claude's own work.`;
 const CODEX_AGENT_DEFINITION = {
   description:
     "Routes a self-contained work packet to GPT-5.6-Sol through the Codex MCP server. Use for any Workflow agent whose agentType is codex.",
@@ -120,15 +120,98 @@ For every packet you receive:
 4. Use \`read-only\` for analysis/research packets and \`workspace-write\` for implementation packets unless the packet explicitly requires another sandbox.
 5. Set \`approval-policy\` to \`never\`.
 6. Always pass \`config: { "model": "gpt-5.6-sol", "model_reasoning_effort": "high" }\`.
-7. Return the Codex result faithfully and immediately. Do not verify it with Read, Bash, Grep, Glob, or any other Claude tool. If the MCP call fails, report that Codex was not invoked; never replace it with your own analysis.
+7. Return the Codex result faithfully and immediately. Do not verify it with Read, Bash, Grep, Glob, or any other Claude tool. If the MCP call fails or returns a blocker, relay that outcome; never retry with broader permissions or replace it with your own analysis.
 
 ${CODEX_MCP_REPLY_TOOL_NAME} may be used only to continue the thread returned by the first Codex call when the packet explicitly requires a correction or follow-up.`,
   criticalSystemReminder_EXPERIMENTAL: CODEX_AGENT_ROUTING_REMINDER,
 } satisfies AgentDefinition;
 
-function makeCodexWorkflowHooks(): NonNullable<ClaudeQueryOptions["hooks"]> {
+function isAbsoluteFilesystemPath(value: string): boolean {
+  return value.startsWith("/") || value.startsWith("\\\\") || /^[a-zA-Z]:[\\/]/u.test(value);
+}
+
+function makeCodexWorkflowHooks(
+  configuredCheckoutRoot: string | undefined,
+  path: Path.Path,
+): NonNullable<ClaudeQueryOptions["hooks"]> {
   const codexAgentIds = new Set<string>();
   const codexInvokedAgentIds = new Set<string>();
+
+  const denyCodexToolUse = (reason: string) => ({
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse" as const,
+      permissionDecision: "deny" as const,
+      permissionDecisionReason: reason,
+      additionalContext: CODEX_AGENT_ROUTING_REMINDER,
+    },
+  });
+
+  const validateCodexToolInput = (
+    value: unknown,
+    hookCwd: string,
+  ): { readonly valid: true } | { readonly valid: false; readonly reason: string } => {
+    if (value === null || typeof value !== "object" || Array.isArray(value)) {
+      return { valid: false, reason: "The Codex call must provide a complete tool input object." };
+    }
+
+    const input = value as Record<string, unknown>;
+    const prompt = readString(input.prompt);
+    const cwd = readString(input.cwd);
+    const sandbox = readString(input.sandbox);
+    const approvalPolicy =
+      readString(input["approval-policy"]) ?? readString(input.approval_policy);
+    const config =
+      input.config !== null && typeof input.config === "object" && !Array.isArray(input.config)
+        ? (input.config as Record<string, unknown>)
+        : undefined;
+
+    if (!prompt) {
+      return { valid: false, reason: "The Codex call must pass the complete packet as prompt." };
+    }
+    if (!cwd || !isAbsoluteFilesystemPath(cwd)) {
+      return { valid: false, reason: "The Codex call must use an absolute cwd." };
+    }
+    const checkoutRoot = path.resolve(configuredCheckoutRoot ?? hookCwd);
+    const normalizedCwd = path.resolve(cwd);
+    const checkoutRelativePath = path.relative(checkoutRoot, normalizedCwd);
+    const staysInCheckout =
+      checkoutRelativePath === "" ||
+      (!checkoutRelativePath.startsWith("..") && !path.isAbsolute(checkoutRelativePath));
+    if (!staysInCheckout) {
+      return {
+        valid: false,
+        reason: `The Codex call cwd must remain in the workflow checkout (${checkoutRoot}).`,
+      };
+    }
+    if (approvalPolicy !== "never") {
+      return { valid: false, reason: 'The Codex call must set approval-policy to "never".' };
+    }
+    if (sandbox !== "read-only" && sandbox !== "workspace-write") {
+      return {
+        valid: false,
+        reason:
+          'The Codex call sandbox must be "read-only" or "workspace-write"; broader sandboxes are forbidden.',
+      };
+    }
+    if (/\bread[\s-]?only\b/iu.test(prompt) && sandbox !== "read-only") {
+      return {
+        valid: false,
+        reason: 'This packet is explicitly read-only, so the Codex sandbox must be "read-only".',
+      };
+    }
+    if (
+      readString(config?.model) !== "gpt-5.6-sol" ||
+      (readString(config?.model_reasoning_effort) ?? readString(config?.modelReasoningEffort)) !==
+        "high"
+    ) {
+      return {
+        valid: false,
+        reason:
+          'The Codex call must pin config.model to "gpt-5.6-sol" and model_reasoning_effort to "high".',
+      };
+    }
+    return { valid: true };
+  };
 
   const onSubagentStart: HookCallback = async (input) => {
     if (input.hook_event_name !== "SubagentStart" || input.agent_type !== "codex") return {};
@@ -147,11 +230,20 @@ function makeCodexWorkflowHooks(): NonNullable<ClaudeQueryOptions["hooks"]> {
     }
     codexAgentIds.add(input.agent_id);
     if (input.tool_name === CODEX_MCP_TOOL_NAME) {
+      if (codexInvokedAgentIds.has(input.agent_id)) {
+        return denyCodexToolUse(
+          "This workflow agent already invoked Codex once. Automatic retries and sandbox escalation are forbidden; relay the existing result or blocker.",
+        );
+      }
+      const validation = validateCodexToolInput(input.tool_input, input.cwd);
+      if (!validation.valid) {
+        return denyCodexToolUse(validation.reason);
+      }
       codexInvokedAgentIds.add(input.agent_id);
       return {};
     }
     if (
-      input.tool_name === CODEX_MCP_REPLY_TOOL_NAME ||
+      (input.tool_name === CODEX_MCP_REPLY_TOOL_NAME && codexInvokedAgentIds.has(input.agent_id)) ||
       (input.tool_name === "StructuredOutput" && codexInvokedAgentIds.has(input.agent_id))
     ) {
       return {};
@@ -284,6 +376,18 @@ interface ClaudeWorkflowDelegatedModelAttribution {
 
 interface ClaudeWorkflowTranscriptEvidence {
   readonly attribution?: ClaudeWorkflowDelegatedModelAttribution;
+  readonly requestedAttribution?: ClaudeWorkflowDelegatedModelAttribution;
+  readonly claudeWrapperPrompt?: string;
+  readonly delegatedToolUseId?: string;
+  readonly delegatedPrompt?: string;
+  readonly delegatedToolInput?: string;
+  readonly delegatedSandbox?: string;
+  readonly delegatedApprovalPolicy?: string;
+  readonly delegatedResultPreview?: string;
+  readonly delegatedRawResult?: string;
+  readonly delegatedThreadId?: string;
+  readonly delegatedTokens?: number;
+  readonly delegatedToolCalls?: number;
   readonly successfulToolCalls: number;
   readonly lastSuccessfulToolName?: string;
 }
@@ -307,6 +411,7 @@ interface ClaudeSessionContext {
   readonly claudeTasks: Map<string, ClaudeTaskState>;
   readonly activeBackgroundTaskIds: Set<string>;
   readonly workflowTranscriptDirs: Map<string, string>;
+  readonly workflowProgressByTaskId: Map<string, ReadonlyArray<Record<string, unknown>>>;
   readonly workflowAgentAttributions: Map<string, ClaudeWorkflowDelegatedModelAttribution>;
   readonly workflowAgentTranscriptEvidence: Map<string, ClaudeWorkflowTranscriptEvidence>;
   readonly workflowAgentFinalScans: Set<string>;
@@ -820,16 +925,80 @@ function readString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
 }
 
+function readJsonRecord(value: unknown): Record<string, unknown> | undefined {
+  let candidate = value;
+  if (typeof candidate === "string") {
+    try {
+      candidate = JSON.parse(candidate);
+    } catch {
+      return undefined;
+    }
+  }
+  return candidate !== null && typeof candidate === "object" && !Array.isArray(candidate)
+    ? (candidate as Record<string, unknown>)
+    : undefined;
+}
+
+function formatTranscriptValue(value: unknown): string | undefined {
+  if (typeof value === "string") return readString(value);
+  if (value === undefined) return undefined;
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return undefined;
+  }
+}
+
+function readCodexResultTelemetry(value: unknown): {
+  readonly preview?: string;
+  readonly threadId?: string;
+  readonly tokens?: number;
+  readonly toolCalls?: number;
+} {
+  const record = readJsonRecord(value);
+  const preview =
+    readString(record?.content) ??
+    readString(record?.result) ??
+    readString(record?.output) ??
+    (typeof value === "string" && !record ? readString(value) : undefined);
+  const threadId = readString(record?.threadId) ?? readString(record?.thread_id);
+  const usage = readJsonRecord(record?.usage);
+  const tokens = finiteNonNegativeInteger(
+    usage?.total_tokens ??
+      usage?.totalTokens ??
+      record?.total_tokens ??
+      record?.totalTokens ??
+      record?.tokens,
+  );
+  const toolCalls = finiteNonNegativeInteger(
+    usage?.tool_calls ??
+      usage?.toolCalls ??
+      usage?.tool_uses ??
+      usage?.toolUses ??
+      record?.tool_calls ??
+      record?.toolCalls,
+  );
+  return {
+    ...(preview ? { preview } : {}),
+    ...(threadId ? { threadId } : {}),
+    ...(tokens !== undefined ? { tokens } : {}),
+    ...(toolCalls !== undefined ? { toolCalls } : {}),
+  };
+}
+
 function extractClaudeWorkflowTranscriptEvidence(
   transcript: string,
 ): ClaudeWorkflowTranscriptEvidence {
+  let claudeWrapperPrompt: string | undefined;
   const toolUses = new Map<
     string,
-    { readonly name: string; readonly input?: Record<string, unknown> }
+    { readonly id: string; readonly name: string; readonly input?: Record<string, unknown> }
   >();
   const successfulTools: Array<{
+    readonly id: string;
     readonly name: string;
     readonly input?: Record<string, unknown>;
+    readonly result?: unknown;
   }> = [];
 
   for (const rawLine of transcript.split(/\r?\n/)) {
@@ -851,6 +1020,9 @@ function extractClaudeWorkflowTranscriptEvidence(
       root?.message !== null && typeof root?.message === "object" && !Array.isArray(root.message)
         ? (root.message as Record<string, unknown>)
         : undefined;
+    if (!claudeWrapperPrompt && message?.role === "user") {
+      claudeWrapperPrompt = readString(message.content);
+    }
     const content = Array.isArray(message?.content) ? message.content : [];
     for (const value of content) {
       if (value === null || typeof value !== "object" || Array.isArray(value)) continue;
@@ -863,40 +1035,74 @@ function extractClaudeWorkflowTranscriptEvidence(
           block.input !== null && typeof block.input === "object" && !Array.isArray(block.input)
             ? (block.input as Record<string, unknown>)
             : undefined;
-        toolUses.set(id, { name, ...(input ? { input } : {}) });
+        toolUses.set(id, { id, name, ...(input ? { input } : {}) });
         continue;
       }
       if (block.type !== "tool_result" || block.is_error === true) continue;
       const toolUseId = readString(block.tool_use_id);
       const toolUse = toolUseId ? toolUses.get(toolUseId) : undefined;
-      if (toolUse) successfulTools.push(toolUse);
+      if (toolUse) {
+        successfulTools.push({
+          ...toolUse,
+          ...(block.content !== undefined ? { result: block.content } : {}),
+        });
+      }
     }
   }
 
   const successfulCodexCall = successfulTools.findLast(
     (toolUse) => toolUse.name === CODEX_MCP_TOOL_NAME,
   );
+  const requestedCodexCall = Array.from(toolUses.values()).findLast(
+    (toolUse) => toolUse.name === CODEX_MCP_TOOL_NAME,
+  );
+  const attributionCall = successfulCodexCall ?? requestedCodexCall;
   const config =
-    successfulCodexCall?.input?.config !== null &&
-    typeof successfulCodexCall?.input?.config === "object" &&
-    !Array.isArray(successfulCodexCall.input.config)
-      ? (successfulCodexCall.input.config as Record<string, unknown>)
+    attributionCall?.input?.config !== null &&
+    typeof attributionCall?.input?.config === "object" &&
+    !Array.isArray(attributionCall.input.config)
+      ? (attributionCall.input.config as Record<string, unknown>)
       : undefined;
   const model = readString(config?.model);
   const reasoningEffort =
     readString(config?.model_reasoning_effort) ?? readString(config?.modelReasoningEffort);
-  const attribution: ClaudeWorkflowDelegatedModelAttribution | undefined = successfulCodexCall
-    ? {
-        provider: "openai" as const,
-        toolName: CODEX_MCP_TOOL_NAME,
-        ...(model ? { model } : {}),
-        ...(reasoningEffort ? { reasoningEffort } : {}),
-      }
-    : undefined;
+  const requestedAttribution: ClaudeWorkflowDelegatedModelAttribution | undefined =
+    requestedCodexCall
+      ? {
+          provider: "openai" as const,
+          toolName: CODEX_MCP_TOOL_NAME,
+          ...(model ? { model } : {}),
+          ...(reasoningEffort ? { reasoningEffort } : {}),
+        }
+      : undefined;
+  const attribution = successfulCodexCall ? requestedAttribution : undefined;
+  const delegatedSandbox = readString(requestedCodexCall?.input?.sandbox);
+  const delegatedApprovalPolicy =
+    readString(requestedCodexCall?.input?.["approval-policy"]) ??
+    readString(requestedCodexCall?.input?.approval_policy);
+  const delegatedToolUseId = attributionCall?.id;
+  const delegatedPrompt = readString(attributionCall?.input?.prompt);
+  const delegatedToolInput = formatTranscriptValue(attributionCall?.input);
+  const delegatedResult = readCodexResultTelemetry(successfulCodexCall?.result);
+  const delegatedRawResult = formatTranscriptValue(successfulCodexCall?.result);
 
   const lastSuccessfulToolName = successfulTools.at(-1)?.name;
   return {
     ...(attribution ? { attribution } : {}),
+    ...(requestedAttribution ? { requestedAttribution } : {}),
+    ...(claudeWrapperPrompt ? { claudeWrapperPrompt } : {}),
+    ...(delegatedToolUseId ? { delegatedToolUseId } : {}),
+    ...(delegatedPrompt ? { delegatedPrompt } : {}),
+    ...(delegatedToolInput ? { delegatedToolInput } : {}),
+    ...(delegatedSandbox ? { delegatedSandbox } : {}),
+    ...(delegatedApprovalPolicy ? { delegatedApprovalPolicy } : {}),
+    ...(delegatedResult.preview ? { delegatedResultPreview: delegatedResult.preview } : {}),
+    ...(delegatedRawResult ? { delegatedRawResult } : {}),
+    ...(delegatedResult.threadId ? { delegatedThreadId: delegatedResult.threadId } : {}),
+    ...(delegatedResult.tokens !== undefined ? { delegatedTokens: delegatedResult.tokens } : {}),
+    ...(delegatedResult.toolCalls !== undefined
+      ? { delegatedToolCalls: delegatedResult.toolCalls }
+      : {}),
     successfulToolCalls: successfulTools.length,
     ...(lastSuccessfulToolName ? { lastSuccessfulToolName } : {}),
   };
@@ -1563,6 +1769,19 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           stream: "native",
         })
       : undefined);
+  const resolveWorkflowCheckoutRoot = Effect.fnUntraced(function* (cwd: string) {
+    const fallback = path.resolve(cwd);
+    let candidate = fallback;
+    while (true) {
+      const hasGitBoundary = yield* fileSystem
+        .exists(path.join(candidate, ".git"))
+        .pipe(Effect.orElseSucceed(() => false));
+      if (hasGitBoundary) return candidate;
+      const parent = path.dirname(candidate);
+      if (parent === candidate) return fallback;
+      candidate = parent;
+    }
+  });
 
   const createQuery =
     options?.createQuery ??
@@ -1602,11 +1821,14 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         let attribution = context.workflowAgentAttributions.get(agentId);
         let transcriptEvidence = context.workflowAgentTranscriptEvidence.get(agentId);
         const lastToolName = readString(entry.lastToolName);
+        const isCodexWorkflowAgent = readString(entry.agentType) === "codex";
         const state = readString(entry.state);
         const terminal =
           state === "done" || state === "completed" || state === "error" || state === "failed";
         const shouldInspect =
-          (!attribution && lastToolName === CODEX_MCP_TOOL_NAME) ||
+          (!attribution &&
+            (lastToolName === CODEX_MCP_TOOL_NAME ||
+              (isCodexWorkflowAgent && !transcriptEvidence?.requestedAttribution))) ||
           (terminal && !context.workflowAgentFinalScans.has(agentId));
 
         if (shouldInspect) {
@@ -1640,16 +1862,66 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
                 ...(lastToolName ? { lastToolName } : {}),
                 ...(_lastToolSummary !== undefined ? { lastToolSummary: _lastToolSummary } : {}),
               };
+        const activeToolAttribution: ClaudeWorkflowDelegatedModelAttribution | undefined =
+          lastToolName === CODEX_MCP_TOOL_NAME
+            ? {
+                provider: "openai",
+                toolName: CODEX_MCP_TOOL_NAME,
+                model: "gpt-5.6-sol",
+                reasoningEffort: "high",
+              }
+            : undefined;
+        const visibleAttribution =
+          attribution ?? transcriptEvidence?.requestedAttribution ?? activeToolAttribution;
+        const delegationState = attribution
+          ? "result_received"
+          : transcriptEvidence?.requestedAttribution || activeToolAttribution
+            ? "requested"
+            : undefined;
         enriched.push(
-          attribution
+          visibleAttribution
             ? {
                 ...baseEntry,
                 ...trustworthyToolTelemetry,
-                delegatedProvider: attribution.provider,
-                delegatedVia: attribution.toolName,
-                ...(attribution.model ? { delegatedModel: attribution.model } : {}),
-                ...(attribution.reasoningEffort
-                  ? { delegatedReasoningEffort: attribution.reasoningEffort }
+                ...(delegationState ? { delegationState } : {}),
+                delegatedProvider: visibleAttribution.provider,
+                delegatedVia: visibleAttribution.toolName,
+                ...(visibleAttribution.model ? { delegatedModel: visibleAttribution.model } : {}),
+                ...(visibleAttribution.reasoningEffort
+                  ? { delegatedReasoningEffort: visibleAttribution.reasoningEffort }
+                  : {}),
+                ...(transcriptEvidence?.claudeWrapperPrompt
+                  ? { claudeWrapperPrompt: transcriptEvidence.claudeWrapperPrompt }
+                  : {}),
+                ...(transcriptEvidence?.delegatedToolUseId
+                  ? { delegatedToolUseId: transcriptEvidence.delegatedToolUseId }
+                  : {}),
+                ...(transcriptEvidence?.delegatedPrompt
+                  ? { delegatedPrompt: transcriptEvidence.delegatedPrompt }
+                  : {}),
+                ...(transcriptEvidence?.delegatedToolInput
+                  ? { delegatedToolInput: transcriptEvidence.delegatedToolInput }
+                  : {}),
+                ...(transcriptEvidence?.delegatedSandbox
+                  ? { delegatedSandbox: transcriptEvidence.delegatedSandbox }
+                  : {}),
+                ...(transcriptEvidence?.delegatedApprovalPolicy
+                  ? { delegatedApprovalPolicy: transcriptEvidence.delegatedApprovalPolicy }
+                  : {}),
+                ...(transcriptEvidence?.delegatedResultPreview
+                  ? { delegatedResultPreview: transcriptEvidence.delegatedResultPreview }
+                  : {}),
+                ...(transcriptEvidence?.delegatedRawResult
+                  ? { delegatedRawResult: transcriptEvidence.delegatedRawResult }
+                  : {}),
+                ...(transcriptEvidence?.delegatedThreadId
+                  ? { delegatedThreadId: transcriptEvidence.delegatedThreadId }
+                  : {}),
+                ...(transcriptEvidence?.delegatedTokens !== undefined
+                  ? { delegatedTokens: transcriptEvidence.delegatedTokens }
+                  : {}),
+                ...(transcriptEvidence?.delegatedToolCalls !== undefined
+                  ? { delegatedToolCalls: transcriptEvidence.delegatedToolCalls }
                   : {}),
               }
             : terminal && transcriptEvidence
@@ -3072,14 +3344,19 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           (entry): entry is Record<string, unknown> =>
             entry !== null && typeof entry === "object" && !Array.isArray(entry),
         );
-        const workflowProgress =
+        if (rawWorkflowProgress && rawWorkflowProgress.length > 0) {
+          context.workflowProgressByTaskId.set(message.task_id, rawWorkflowProgress);
+        }
+        const workflowProgressSource =
           rawWorkflowProgress && rawWorkflowProgress.length > 0
-            ? yield* enrichWorkflowProgressAttribution(
-                context,
-                message.task_id,
-                rawWorkflowProgress,
-              )
-            : rawWorkflowProgress;
+            ? rawWorkflowProgress
+            : context.workflowProgressByTaskId.get(message.task_id);
+        const workflowProgress =
+          workflowProgressSource && workflowProgressSource.length > 0
+            ? yield* enrichWorkflowProgressAttribution(context, message.task_id, [
+                ...workflowProgressSource,
+              ])
+            : workflowProgressSource;
         yield* emitThreadTokenUsage(
           context,
           normalizeClaudeTaskProgressTokenUsage(message.usage, context),
@@ -3114,6 +3391,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           message.patch.status === "paused"
         ) {
           context.activeBackgroundTaskIds.delete(message.task_id);
+          context.workflowProgressByTaskId.delete(message.task_id);
         } else if (message.patch.status === "running") {
           context.activeBackgroundTaskIds.add(message.task_id);
         }
@@ -3128,6 +3406,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         return;
       case "task_notification":
         context.activeBackgroundTaskIds.delete(message.task_id);
+        context.workflowProgressByTaskId.delete(message.task_id);
         yield* emitThreadTokenUsage(
           context,
           normalizeClaudeTaskProgressTokenUsage(message.usage, context),
@@ -3935,6 +4214,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         ...(ultracode ? { ultracode: true } : {}),
       };
       const mcpSession = McpProviderSession.readMcpProviderSession(input.threadId);
+      const workflowCheckoutRoot = input.cwd
+        ? yield* resolveWorkflowCheckoutRoot(input.cwd)
+        : undefined;
       const queryOptions: ClaudeQueryOptions = {
         ...(input.cwd ? { cwd: input.cwd } : {}),
         ...(apiModelId ? { model: apiModelId } : {}),
@@ -3944,7 +4226,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         agents: {
           codex: CODEX_AGENT_DEFINITION,
         },
-        hooks: makeCodexWorkflowHooks(),
+        hooks: makeCodexWorkflowHooks(workflowCheckoutRoot, path),
         // `ultracode` is a Claude Code setting, not an API effort level. It is
         // normalized to `xhigh` above and paired with `settings.ultracode`.
         ...(effectiveEffort
@@ -4055,6 +4337,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         claudeTasks,
         activeBackgroundTaskIds: new Set(),
         workflowTranscriptDirs: new Map(),
+        workflowProgressByTaskId: new Map(),
         workflowAgentAttributions: new Map(),
         workflowAgentTranscriptEvidence: new Map(),
         workflowAgentFinalScans: new Set(),
@@ -4256,6 +4539,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       const taskIds = [...context.activeBackgroundTaskIds];
       context.activeBackgroundTaskIds.clear();
       for (const taskId of taskIds) {
+        context.workflowProgressByTaskId.delete(taskId);
         yield* updateBackgroundTaskStatus(context, taskId, "paused", "thread_interrupted");
       }
     },
@@ -4282,6 +4566,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           }),
       });
       context.activeBackgroundTaskIds.delete(taskId);
+      context.workflowProgressByTaskId.delete(taskId);
       yield* updateBackgroundTaskStatus(context, taskId, "stopped", "task_stop_requested");
     },
   );

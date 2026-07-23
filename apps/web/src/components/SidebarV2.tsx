@@ -20,6 +20,7 @@ import {
   FolderIcon,
   FolderPlusIcon,
   GitBranchIcon,
+  HourglassIcon,
   MessageSquareIcon,
   PlusIcon,
   SearchIcon,
@@ -104,6 +105,7 @@ import { SidebarContent, SidebarGroup, SidebarMenuButton, useSidebar } from "./u
 import { SidebarChromeFooter, SidebarChromeHeader } from "./sidebar/SidebarChrome";
 import { Tooltip, TooltipPopup, TooltipProvider, TooltipTrigger } from "./ui/tooltip";
 import { useComposerDraftStore } from "../composerDraftStore";
+import { formatWorkflowModelName } from "../claude-workflows";
 
 // Settled-tail paging: recent history is the common lookup; the deep tail
 // stays behind an explicit Show more.
@@ -262,18 +264,27 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
   // Same semantics as v1 (never-visited counts as read): flipping the beta
   // flag must not light up every historical thread as unread.
   const isUnread = hasUnseenCompletion({ ...thread, lastVisitedAt });
-  const status = resolveSidebarV2Status(thread);
+  const activeWorkflow = thread.activeWorkflow;
+  const providerStatus = resolveSidebarV2Status(thread);
+  const status = activeWorkflow && providerStatus === "ready" ? "working" : providerStatus;
   const shouldRecede = status === "ready" && !isUnread && !props.isActive && !isSelected;
+  const isWaitingForModel = activeWorkflow?.state === "waitingForCodex";
+  const workingLabel = isWaitingForModel
+    ? `Waiting for ${formatWorkflowModelName(activeWorkflow.waitingForModel, "Codex")}`
+    : activeWorkflow?.state === "finalizing"
+      ? `Finalizing · ${activeWorkflow.finalizedCount}/${activeWorkflow.agentCount}`
+      : "Working";
   // Status hues follow the system-wide convention set by sidebar v1 and the
   // mobile Live Activity/widgets (amber approval, indigo input, sky working)
   // so a thread reads the same color everywhere it surfaces.
   const topStatus =
     status === "working"
       ? {
-          label: "Working",
-          icon: "working" as const,
-          className:
-            "animate-sidebar-working-text text-sky-600 motion-reduce:animate-none dark:text-sky-400",
+          label: workingLabel,
+          icon: isWaitingForModel ? ("waiting" as const) : ("working" as const),
+          className: isWaitingForModel
+            ? "text-violet-600 dark:text-violet-300"
+            : "animate-sidebar-working-text text-sky-600 motion-reduce:animate-none dark:text-sky-400",
         }
       : status === "approval"
         ? {
@@ -641,6 +652,11 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
                     >
                       {topStatus.icon === "working" ? (
                         <CircleDashedIcon aria-hidden className="size-4 shrink-0" />
+                      ) : topStatus.icon === "waiting" ? (
+                        <HourglassIcon
+                          aria-hidden
+                          className="size-3.5 shrink-0 animate-pulse motion-reduce:animate-none"
+                        />
                       ) : topStatus.icon === "done" ? (
                         <CircleCheckIcon aria-hidden className="size-4 shrink-0" />
                       ) : null}

@@ -174,6 +174,28 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           '2026-02-24T00:00:06.000Z'
         )
       `;
+      yield* sql`
+        INSERT INTO projection_thread_activities (
+          activity_id,
+          thread_id,
+          turn_id,
+          tone,
+          kind,
+          summary,
+          payload_json,
+          created_at
+        )
+        VALUES (
+          'activity-2',
+          'thread-1',
+          'turn-1',
+          'info',
+          'task.progress',
+          'Recall repair triage',
+          '{"taskId":"workflow-task","title":"Recall repair triage","workflowProgress":[{"type":"workflow_agent","agentId":"agent-1","state":"progress","delegationState":"result_received","delegatedProvider":"openai","delegatedModel":"gpt-5.6-sol","delegatedVia":"mcp__codex__codex"},{"type":"workflow_agent","agentId":"agent-2","state":"progress","delegationState":"requested","delegatedProvider":"openai","delegatedModel":"gpt-5.6-sol","delegatedVia":"mcp__codex__codex"},{"type":"workflow_agent","agentId":"agent-3","state":"done","delegationState":"result_received","delegatedProvider":"openai","delegatedModel":"gpt-5.6-sol","delegatedVia":"mcp__codex__codex"}]}',
+          '2026-02-24T00:00:06.500Z'
+        )
+      `;
 
       yield* sql`
         INSERT INTO projection_thread_sessions (
@@ -343,6 +365,47 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
               turnId: asTurnId("turn-1"),
               createdAt: "2026-02-24T00:00:06.000Z",
             },
+            {
+              id: asEventId("activity-2"),
+              tone: "info",
+              kind: "task.progress",
+              summary: "Recall repair triage",
+              payload: {
+                taskId: "workflow-task",
+                title: "Recall repair triage",
+                workflowProgress: [
+                  {
+                    type: "workflow_agent",
+                    agentId: "agent-1",
+                    state: "progress",
+                    delegationState: "result_received",
+                    delegatedProvider: "openai",
+                    delegatedModel: "gpt-5.6-sol",
+                    delegatedVia: "mcp__codex__codex",
+                  },
+                  {
+                    type: "workflow_agent",
+                    agentId: "agent-2",
+                    state: "progress",
+                    delegationState: "requested",
+                    delegatedProvider: "openai",
+                    delegatedModel: "gpt-5.6-sol",
+                    delegatedVia: "mcp__codex__codex",
+                  },
+                  {
+                    type: "workflow_agent",
+                    agentId: "agent-3",
+                    state: "done",
+                    delegationState: "result_received",
+                    delegatedProvider: "openai",
+                    delegatedModel: "gpt-5.6-sol",
+                    delegatedVia: "mcp__codex__codex",
+                  },
+                ],
+              },
+              turnId: asTurnId("turn-1"),
+              createdAt: "2026-02-24T00:00:06.500Z",
+            },
           ],
           checkpoints: [
             {
@@ -435,6 +498,16 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           hasPendingApprovals: true,
           hasPendingUserInput: false,
           hasActionableProposedPlan: false,
+          activeWorkflow: {
+            taskId: "workflow-task",
+            name: "Recall repair triage",
+            state: "waitingForCodex",
+            waitingForModel: "gpt-5.6-sol",
+            agentCount: 3,
+            requestedCount: 3,
+            resultCount: 2,
+            finalizedCount: 1,
+          },
         },
       ]);
 
@@ -442,6 +515,34 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       assert.equal(threadDetail._tag, "Some");
       if (threadDetail._tag === "Some") {
         assert.deepEqual(threadDetail.value, snapshot.threads[0]);
+      }
+
+      yield* sql`
+        INSERT INTO projection_thread_activities (
+          activity_id,
+          thread_id,
+          turn_id,
+          tone,
+          kind,
+          summary,
+          payload_json,
+          created_at
+        )
+        VALUES (
+          'activity-3',
+          'thread-1',
+          'turn-1',
+          'info',
+          'task.completed',
+          'Recall repair triage completed',
+          '{"taskId":"workflow-task","status":"completed"}',
+          '2026-02-24T00:00:10.000Z'
+        )
+      `;
+      const completedShell = yield* snapshotQuery.getThreadShellById(ThreadId.make("thread-1"));
+      assert.equal(completedShell._tag, "Some");
+      if (completedShell._tag === "Some") {
+        assert.equal(completedShell.value.activeWorkflow, undefined);
       }
     }),
   );

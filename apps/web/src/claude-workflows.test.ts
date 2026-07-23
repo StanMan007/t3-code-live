@@ -3,6 +3,7 @@ import type { OrchestrationThreadActivity } from "@t3tools/contracts";
 import {
   deriveClaudeWorkflowRuns,
   findActiveClaudeWorkflowRunIndex,
+  formatWorkflowModelName,
   inferClaudeWorkflowModelProvider,
   parseClaudeWorkflowDefinition,
 } from "./claude-workflows";
@@ -43,6 +44,15 @@ describe("inferClaudeWorkflowModelProvider", () => {
     expect(inferClaudeWorkflowModelProvider("openai/gpt-5.6-sol")).toBe("openai");
     expect(inferClaudeWorkflowModelProvider("o3-mini")).toBe("openai");
     expect(inferClaudeWorkflowModelProvider("custom-model")).toBeNull();
+  });
+});
+
+describe("formatWorkflowModelName", () => {
+  it("turns provider slugs into compact, trustworthy UI labels", () => {
+    expect(formatWorkflowModelName("claude-fable-5[1m]")).toBe("Fable 5");
+    expect(formatWorkflowModelName("claude-sonnet-5")).toBe("Sonnet 5");
+    expect(formatWorkflowModelName("openai/gpt-5.6-sol")).toBe("GPT-5.6-Sol");
+    expect(formatWorkflowModelName(undefined, "Runner")).toBe("Runner");
   });
 });
 
@@ -210,6 +220,15 @@ describe("deriveClaudeWorkflowRuns", () => {
               delegatedModel: "gpt-5.6-sol",
               delegatedReasoningEffort: "high",
               delegatedVia: "mcp__codex__codex",
+              claudeWrapperPrompt: "Route this packet through Codex exactly once.",
+              delegatedToolUseId: "tool-codex-1",
+              delegatedPrompt: "Read package.json and report its name.",
+              delegatedToolInput:
+                '{"prompt":"Read package.json and report its name.","config":{"model":"gpt-5.6-sol"}}',
+              delegatedResultPreview: "Root package is @t3tools/monorepo.",
+              delegatedRawResult:
+                '{"threadId":"codex-thread-1","content":"Root package is @t3tools/monorepo."}',
+              delegatedThreadId: "codex-thread-1",
               state: "done",
               promptPreview: "Read package.json",
               lastToolName: "StructuredOutput",
@@ -237,6 +256,14 @@ describe("deriveClaudeWorkflowRuns", () => {
         createdAt: "2026-07-22T16:00:11.000Z",
         payload: { taskId: "workflow-task", patch: { status: "completed" } },
       },
+      {
+        id: "event-5",
+        kind: "task.updated",
+        tone: "info",
+        summary: "Task updated",
+        createdAt: "2026-07-22T16:00:11.000Z",
+        payload: { taskId: "workflow-task", patch: { status: "stopped" } },
+      },
     ] as unknown as OrchestrationThreadActivity[];
 
     const runs = deriveClaudeWorkflowRuns(activities);
@@ -260,6 +287,15 @@ describe("deriveClaudeWorkflowRuns", () => {
         delegatedModel: "gpt-5.6-sol",
         delegatedReasoningEffort: "high",
         delegatedVia: "mcp__codex__codex",
+        claudeWrapperPrompt: "Route this packet through Codex exactly once.",
+        delegatedToolUseId: "tool-codex-1",
+        delegatedPrompt: "Read package.json and report its name.",
+        delegatedToolInput:
+          '{"prompt":"Read package.json and report its name.","config":{"model":"gpt-5.6-sol"}}',
+        delegatedResultPreview: "Root package is @t3tools/monorepo.",
+        delegatedRawResult:
+          '{"threadId":"codex-thread-1","content":"Root package is @t3tools/monorepo."}',
+        delegatedThreadId: "codex-thread-1",
         recentTools: ["StructuredOutput"],
         summary: '{"name":"@t3tools/monorepo"}',
       }),
@@ -343,6 +379,63 @@ describe("deriveClaudeWorkflowRuns", () => {
       startedAtMs: Date.parse(startedAt),
       updatedAtMs: Date.parse(pausedAt),
     });
+  });
+
+  it("keeps an in-flight Codex activity separate from a verified final result", () => {
+    const activities = [
+      {
+        id: "event-start",
+        kind: "task.started",
+        tone: "info",
+        summary: "local_workflow task started",
+        createdAt: "2026-07-22T16:00:00.000Z",
+        payload: {
+          taskId: "workflow-task",
+          taskType: "local_workflow",
+          workflowName: "codex-review",
+        },
+      },
+      {
+        id: "event-progress",
+        kind: "task.progress",
+        tone: "info",
+        summary: "Codex review",
+        createdAt: "2026-07-22T16:00:05.000Z",
+        payload: {
+          taskId: "workflow-task",
+          workflowProgress: [
+            {
+              type: "workflow_agent",
+              agentId: "agent-codex",
+              label: "review:codex",
+              phaseTitle: "Review",
+              model: "claude-sonnet-5",
+              state: "progress",
+              delegationState: "requested",
+              delegatedProvider: "openai",
+              delegatedModel: "gpt-5.6-sol",
+              delegatedReasoningEffort: "high",
+              delegatedVia: "mcp__codex__codex",
+              delegatedSandbox: "read-only",
+              delegatedApprovalPolicy: "never",
+              lastToolName: "mcp__codex__codex",
+              lastToolSummary: "Waiting for the delegated result.",
+            },
+          ],
+        },
+      },
+    ] as unknown as OrchestrationThreadActivity[];
+
+    const agent = deriveClaudeWorkflowRuns(activities)[0]?.agents[0];
+    expect(agent).toMatchObject({
+      id: "agent-codex",
+      delegationState: "requested",
+      delegatedModel: "gpt-5.6-sol",
+      delegatedSandbox: "read-only",
+      delegatedApprovalPolicy: "never",
+      activitySummary: "Waiting for the delegated result.",
+    });
+    expect(agent?.summary).toBeUndefined();
   });
 
   it("closes a stale running workflow when the authoritative provider roster is empty", () => {

@@ -382,11 +382,21 @@ describe("ClaudeAdapterLive", () => {
   it.effect("programmatically enforces the Codex MCP wrapper for workflow agents", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
+      const checkoutRoot = NodeFS.mkdtempSync(
+        NodePath.join(NodeOS.tmpdir(), "claude-codex-checkout-"),
+      );
+      NodeFS.mkdirSync(NodePath.join(checkoutRoot, ".git"));
+      const nestedHookCwd = NodePath.join(checkoutRoot, "apps", "server");
+      NodeFS.mkdirSync(nestedHookCwd, { recursive: true });
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => NodeFS.rmSync(checkoutRoot, { recursive: true, force: true })),
+      );
       const adapter = yield* ClaudeAdapter;
       yield* adapter.startSession({
         threadId: THREAD_ID,
         provider: ProviderDriverKind.make("claudeAgent"),
         runtimeMode: "full-access",
+        cwd: nestedHookCwd,
       });
 
       const codexAgent = harness.getLastCreateQueryInput()?.options.agents?.codex;
@@ -414,8 +424,8 @@ describe("ClaudeAdapterLive", () => {
           {
             hook_event_name: "SubagentStart",
             session_id: "session-1",
-            transcript_path: "/tmp/project/transcript.jsonl",
-            cwd: "/tmp/project",
+            transcript_path: NodePath.join(checkoutRoot, "transcript.jsonl"),
+            cwd: nestedHookCwd,
             agent_id: "agent-codex-1",
             agent_type: "codex",
           },
@@ -434,12 +444,12 @@ describe("ClaudeAdapterLive", () => {
           {
             hook_event_name: "PreToolUse",
             session_id: "session-1",
-            transcript_path: "/tmp/project/transcript.jsonl",
-            cwd: "/tmp/project",
+            transcript_path: NodePath.join(checkoutRoot, "transcript.jsonl"),
+            cwd: nestedHookCwd,
             agent_id: "agent-codex-1",
             agent_type: "codex",
             tool_name: "Read",
-            tool_input: { file_path: "/tmp/project/package.json" },
+            tool_input: { file_path: NodePath.join(checkoutRoot, "package.json") },
             tool_use_id: "tool-read-1",
           },
           "tool-read-1",
@@ -460,12 +470,21 @@ describe("ClaudeAdapterLive", () => {
           {
             hook_event_name: "PreToolUse",
             session_id: "session-1",
-            transcript_path: "/tmp/project/transcript.jsonl",
-            cwd: "/tmp/project",
+            transcript_path: NodePath.join(checkoutRoot, "transcript.jsonl"),
+            cwd: nestedHookCwd,
             agent_id: "agent-codex-1",
             agent_type: "codex",
             tool_name: "mcp__codex__codex",
-            tool_input: {},
+            tool_input: {
+              prompt: "Review this implementation packet.",
+              cwd: checkoutRoot,
+              sandbox: "workspace-write",
+              "approval-policy": "never",
+              config: {
+                model: "gpt-5.6-sol",
+                model_reasoning_effort: "high",
+              },
+            },
             tool_use_id: "tool-codex-1",
           },
           "tool-codex-1",
@@ -474,13 +493,56 @@ describe("ClaudeAdapterLive", () => {
       );
       assert.deepEqual(allowedCodex, {});
 
+      const blockedCodexRetry = yield* Effect.promise(() =>
+        preToolUseHook(
+          {
+            hook_event_name: "PreToolUse",
+            session_id: "session-1",
+            transcript_path: NodePath.join(checkoutRoot, "transcript.jsonl"),
+            cwd: nestedHookCwd,
+            agent_id: "agent-codex-1",
+            agent_type: "codex",
+            tool_name: "mcp__codex__codex",
+            tool_input: {
+              prompt: "Retry with more access.",
+              cwd: checkoutRoot,
+              sandbox: "danger-full-access",
+              "approval-policy": "never",
+              config: {
+                model: "gpt-5.6-sol",
+                model_reasoning_effort: "high",
+              },
+            },
+            tool_use_id: "tool-codex-2",
+          },
+          "tool-codex-2",
+          { signal: hookSignal },
+        ),
+      );
+      assert.equal(
+        (
+          blockedCodexRetry as {
+            hookSpecificOutput?: { permissionDecision?: string; permissionDecisionReason?: string };
+          }
+        ).hookSpecificOutput?.permissionDecision,
+        "deny",
+      );
+      assert.match(
+        (
+          blockedCodexRetry as {
+            hookSpecificOutput?: { permissionDecisionReason?: string };
+          }
+        ).hookSpecificOutput?.permissionDecisionReason ?? "",
+        /already invoked Codex once/u,
+      );
+
       const allowedStructuredOutput = yield* Effect.promise(() =>
         preToolUseHook(
           {
             hook_event_name: "PreToolUse",
             session_id: "session-1",
-            transcript_path: "/tmp/project/transcript.jsonl",
-            cwd: "/tmp/project",
+            transcript_path: NodePath.join(checkoutRoot, "transcript.jsonl"),
+            cwd: nestedHookCwd,
             agent_id: "agent-codex-1",
             agent_type: "codex",
             tool_name: "StructuredOutput",
@@ -492,6 +554,107 @@ describe("ClaudeAdapterLive", () => {
         ),
       );
       assert.deepEqual(allowedStructuredOutput, {});
+
+      const startSecondAgent = yield* Effect.promise(() =>
+        subagentStartHook(
+          {
+            hook_event_name: "SubagentStart",
+            session_id: "session-1",
+            transcript_path: NodePath.join(checkoutRoot, "transcript.jsonl"),
+            cwd: nestedHookCwd,
+            agent_id: "agent-codex-2",
+            agent_type: "codex",
+          },
+          undefined,
+          { signal: hookSignal },
+        ),
+      );
+      assert.ok(startSecondAgent);
+
+      const blockedReadOnlyEscalation = yield* Effect.promise(() =>
+        preToolUseHook(
+          {
+            hook_event_name: "PreToolUse",
+            session_id: "session-1",
+            transcript_path: NodePath.join(checkoutRoot, "transcript.jsonl"),
+            cwd: nestedHookCwd,
+            agent_id: "agent-codex-2",
+            agent_type: "codex",
+            tool_name: "mcp__codex__codex",
+            tool_input: {
+              prompt: "This is a READ-ONLY research packet.",
+              cwd: checkoutRoot,
+              sandbox: "workspace-write",
+              "approval-policy": "never",
+              config: {
+                model: "gpt-5.6-sol",
+                model_reasoning_effort: "high",
+              },
+            },
+            tool_use_id: "tool-codex-read-only-escalation",
+          },
+          "tool-codex-read-only-escalation",
+          { signal: hookSignal },
+        ),
+      );
+      assert.equal(
+        (
+          blockedReadOnlyEscalation as {
+            hookSpecificOutput?: { permissionDecision?: string; permissionDecisionReason?: string };
+          }
+        ).hookSpecificOutput?.permissionDecision,
+        "deny",
+      );
+      assert.match(
+        (
+          blockedReadOnlyEscalation as {
+            hookSpecificOutput?: { permissionDecisionReason?: string };
+          }
+        ).hookSpecificOutput?.permissionDecisionReason ?? "",
+        /explicitly read-only/u,
+      );
+
+      yield* Effect.promise(() =>
+        subagentStartHook(
+          {
+            hook_event_name: "SubagentStart",
+            session_id: "session-1",
+            transcript_path: NodePath.join(checkoutRoot, "transcript.jsonl"),
+            cwd: nestedHookCwd,
+            agent_id: "agent-codex-3",
+            agent_type: "codex",
+          },
+          undefined,
+          { signal: hookSignal },
+        ),
+      );
+      const allowedCheckoutRoot = yield* Effect.promise(() =>
+        preToolUseHook(
+          {
+            hook_event_name: "PreToolUse",
+            session_id: "session-1",
+            transcript_path: NodePath.join(checkoutRoot, "transcript.jsonl"),
+            cwd: nestedHookCwd,
+            agent_id: "agent-codex-3",
+            agent_type: "codex",
+            tool_name: "mcp__codex__codex",
+            tool_input: {
+              prompt: "This is a READ-ONLY research packet.",
+              cwd: checkoutRoot,
+              sandbox: "read-only",
+              "approval-policy": "never",
+              config: {
+                model: "gpt-5.6-sol",
+                model_reasoning_effort: "high",
+              },
+            },
+            tool_use_id: "tool-codex-checkout-root",
+          },
+          "tool-codex-checkout-root",
+          { signal: hookSignal },
+        ),
+      );
+      assert.deepEqual(allowedCheckoutRoot, {});
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
@@ -2114,6 +2277,28 @@ describe("ClaudeAdapterLive", () => {
     const transcriptDir = NodeFS.mkdtempSync(
       NodePath.join(NodeOS.tmpdir(), "claude-workflow-attribution-"),
     );
+    const claudeWrapperPrompt = "Route this read-only packet through Codex exactly once.";
+    const delegatedToolInput = {
+      prompt: "READ-ONLY review",
+      cwd: "/tmp/project",
+      sandbox: "read-only",
+      "approval-policy": "never",
+      config: {
+        model: "gpt-5.6-sol",
+        model_reasoning_effort: "high",
+      },
+    };
+    const delegatedToolInputText = `{
+  "prompt": "READ-ONLY review",
+  "cwd": "/tmp/project",
+  "sandbox": "read-only",
+  "approval-policy": "never",
+  "config": {
+    "model": "gpt-5.6-sol",
+    "model_reasoning_effort": "high"
+  }
+}`;
+    const delegatedRawResult = '{"threadId":"thread-1","content":"done"}';
     const harness = makeHarness();
     return Effect.gen(function* () {
       yield* Effect.addFinalizer(() =>
@@ -2121,61 +2306,12 @@ describe("ClaudeAdapterLive", () => {
       );
       NodeFS.writeFileSync(
         NodePath.join(transcriptDir, "agent-agent-codex.jsonl"),
-        [
-          encodeUnknownJsonString({
-            message: {
-              model: "claude-sonnet-5",
-              content: [
-                {
-                  type: "tool_use",
-                  id: "tool-codex-1",
-                  name: "mcp__codex__codex",
-                  input: {
-                    config: {
-                      model: "gpt-5.6-sol",
-                      model_reasoning_effort: "high",
-                    },
-                  },
-                },
-              ],
-            },
-          }),
-          encodeUnknownJsonString({
-            message: {
-              content: [
-                {
-                  type: "tool_result",
-                  tool_use_id: "tool-codex-1",
-                  content: '{"threadId":"thread-1","content":"done"}',
-                },
-              ],
-            },
-          }),
-          encodeUnknownJsonString({
-            message: {
-              content: [
-                {
-                  type: "tool_use",
-                  id: "tool-read-denied",
-                  name: "Read",
-                  input: { file_path: "/tmp/project/package.json" },
-                },
-              ],
-            },
-          }),
-          encodeUnknownJsonString({
-            message: {
-              content: [
-                {
-                  type: "tool_result",
-                  tool_use_id: "tool-read-denied",
-                  is_error: true,
-                  content: "Denied by the Codex routing hook.",
-                },
-              ],
-            },
-          }),
-        ].join("\n"),
+        encodeUnknownJsonString({
+          message: {
+            role: "user",
+            content: claudeWrapperPrompt,
+          },
+        }),
       );
 
       const adapter = yield* ClaudeAdapter;
@@ -2240,6 +2376,112 @@ describe("ClaudeAdapterLive", () => {
             label: "review:codex",
             phaseTitle: "Review",
             model: "claude-sonnet-5",
+            state: "progress",
+            lastToolName: "mcp__codex__codex",
+            lastToolSummary: "Waiting for the delegated result.",
+            toolCalls: 1,
+          },
+        ],
+        session_id: "sdk-session-workflow-attribution",
+        uuid: "workflow-task-progress-requested",
+      } as unknown as SDKMessage);
+
+      const requestedEvent = Array.from(yield* Fiber.join(progressEventsFiber))[0];
+      assert.equal(requestedEvent?.type, "task.progress");
+      if (requestedEvent?.type === "task.progress") {
+        assert.deepEqual(requestedEvent.payload.workflowProgress, [
+          {
+            type: "workflow_agent",
+            agentId: "agent-codex",
+            label: "review:codex",
+            phaseTitle: "Review",
+            model: "claude-sonnet-5",
+            state: "progress",
+            lastToolName: "mcp__codex__codex",
+            lastToolSummary: "Waiting for the delegated result.",
+            toolCalls: 1,
+            delegationState: "requested",
+            delegatedProvider: "openai",
+            delegatedVia: "mcp__codex__codex",
+            delegatedModel: "gpt-5.6-sol",
+            delegatedReasoningEffort: "high",
+            claudeWrapperPrompt,
+          },
+        ]);
+      }
+
+      NodeFS.appendFileSync(
+        NodePath.join(transcriptDir, "agent-agent-codex.jsonl"),
+        `\n${[
+          encodeUnknownJsonString({
+            message: {
+              model: "claude-sonnet-5",
+              content: [
+                {
+                  type: "tool_use",
+                  id: "tool-codex-1",
+                  name: "mcp__codex__codex",
+                  input: delegatedToolInput,
+                },
+              ],
+            },
+          }),
+          encodeUnknownJsonString({
+            message: {
+              content: [
+                {
+                  type: "tool_result",
+                  tool_use_id: "tool-codex-1",
+                  content: delegatedRawResult,
+                },
+              ],
+            },
+          }),
+          encodeUnknownJsonString({
+            message: {
+              content: [
+                {
+                  type: "tool_use",
+                  id: "tool-read-denied",
+                  name: "Read",
+                  input: { file_path: "/tmp/project/package.json" },
+                },
+              ],
+            },
+          }),
+          encodeUnknownJsonString({
+            message: {
+              content: [
+                {
+                  type: "tool_result",
+                  tool_use_id: "tool-read-denied",
+                  is_error: true,
+                  content: "Denied by the Codex routing hook.",
+                },
+              ],
+            },
+          }),
+        ].join("\n")}`,
+      );
+      const resultEventFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.type === "task.progress"),
+        Stream.take(1),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      harness.query.emit({
+        type: "system",
+        subtype: "task_progress",
+        task_id: "workflow-task-attribution",
+        description: "Codex review",
+        usage: { total_tokens: 123, tool_uses: 1, duration_ms: 400 },
+        workflow_progress: [
+          {
+            type: "workflow_agent",
+            agentId: "agent-codex",
+            label: "review:codex",
+            phaseTitle: "Review",
+            model: "claude-sonnet-5",
             state: "done",
             lastToolName: "Read",
             lastToolSummary: "/tmp/project/package.json",
@@ -2247,13 +2489,13 @@ describe("ClaudeAdapterLive", () => {
           },
         ],
         session_id: "sdk-session-workflow-attribution",
-        uuid: "workflow-task-progress",
+        uuid: "workflow-task-progress-result",
       } as unknown as SDKMessage);
 
-      const progressEvent = Array.from(yield* Fiber.join(progressEventsFiber))[0];
-      assert.equal(progressEvent?.type, "task.progress");
-      if (progressEvent?.type === "task.progress") {
-        assert.deepEqual(progressEvent.payload.workflowProgress, [
+      const resultEvent = Array.from(yield* Fiber.join(resultEventFiber))[0];
+      assert.equal(resultEvent?.type, "task.progress");
+      if (resultEvent?.type === "task.progress") {
+        assert.deepEqual(resultEvent.payload.workflowProgress, [
           {
             type: "workflow_agent",
             agentId: "agent-codex",
@@ -2263,10 +2505,211 @@ describe("ClaudeAdapterLive", () => {
             state: "done",
             lastToolName: "mcp__codex__codex",
             toolCalls: 1,
+            delegationState: "result_received",
             delegatedProvider: "openai",
             delegatedVia: "mcp__codex__codex",
             delegatedModel: "gpt-5.6-sol",
             delegatedReasoningEffort: "high",
+            claudeWrapperPrompt,
+            delegatedToolUseId: "tool-codex-1",
+            delegatedPrompt: "READ-ONLY review",
+            delegatedToolInput: delegatedToolInputText,
+            delegatedSandbox: "read-only",
+            delegatedApprovalPolicy: "never",
+            delegatedResultPreview: "done",
+            delegatedRawResult,
+            delegatedThreadId: "thread-1",
+          },
+        ]);
+      }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("carries the workflow roster while a Codex worker is waiting", () => {
+    const transcriptDir = NodeFS.mkdtempSync(
+      NodePath.join(NodeOS.tmpdir(), "claude-workflow-waiting-"),
+    );
+    const transcriptPath = NodePath.join(transcriptDir, "agent-agent-codex.jsonl");
+    const claudeWrapperPrompt = "Call Codex exactly once and wait for its result.";
+    const delegatedToolInput = {
+      prompt: "Inspect the package metadata without changing files.",
+      cwd: "/tmp/project",
+      sandbox: "read-only",
+      "approval-policy": "never",
+      config: {
+        model: "gpt-5.6-sol",
+        model_reasoning_effort: "high",
+      },
+    };
+    const delegatedToolInputText = `{
+  "prompt": "Inspect the package metadata without changing files.",
+  "cwd": "/tmp/project",
+  "sandbox": "read-only",
+  "approval-policy": "never",
+  "config": {
+    "model": "gpt-5.6-sol",
+    "model_reasoning_effort": "high"
+  }
+}`;
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => NodeFS.rmSync(transcriptDir, { recursive: true, force: true })),
+      );
+      NodeFS.writeFileSync(
+        transcriptPath,
+        encodeUnknownJsonString({
+          message: {
+            role: "user",
+            content: claudeWrapperPrompt,
+          },
+        }),
+      );
+
+      const adapter = yield* ClaudeAdapter;
+      const startingEventFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.type === "task.progress"),
+        Stream.take(1),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      harness.query.emit({
+        type: "stream_event",
+        session_id: "sdk-session-workflow-waiting",
+        uuid: "workflow-tool-start-waiting",
+        parent_tool_use_id: null,
+        event: {
+          type: "content_block_start",
+          index: 1,
+          content_block: {
+            type: "tool_use",
+            id: "tool-workflow-waiting",
+            name: "Workflow",
+            input: { script: "export const meta = { name: 'waiting' }" },
+          },
+        },
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "user",
+        session_id: "sdk-session-workflow-waiting",
+        uuid: "workflow-tool-result-waiting",
+        parent_tool_use_id: null,
+        tool_use_result: {
+          taskId: "workflow-task-waiting",
+          transcriptDir,
+        },
+        message: {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "tool-workflow-waiting",
+              content: "Workflow launched in background.",
+            },
+          ],
+        },
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "system",
+        subtype: "task_progress",
+        task_id: "workflow-task-waiting",
+        description: "Codex review",
+        usage: { total_tokens: 20, tool_uses: 0, duration_ms: 100 },
+        workflow_progress: [
+          {
+            type: "workflow_agent",
+            agentId: "agent-codex",
+            agentType: "codex",
+            label: "review:codex",
+            phaseTitle: "Review",
+            model: "claude-sonnet-5",
+            state: "start",
+          },
+        ],
+        session_id: "sdk-session-workflow-waiting",
+        uuid: "workflow-task-progress-starting",
+      } as unknown as SDKMessage);
+
+      const startingEvent = Array.from(yield* Fiber.join(startingEventFiber))[0];
+      assert.equal(startingEvent?.type, "task.progress");
+      if (startingEvent?.type === "task.progress") {
+        assert.deepEqual(startingEvent.payload.workflowProgress, [
+          {
+            type: "workflow_agent",
+            agentId: "agent-codex",
+            agentType: "codex",
+            label: "review:codex",
+            phaseTitle: "Review",
+            model: "claude-sonnet-5",
+            state: "start",
+          },
+        ]);
+      }
+
+      NodeFS.appendFileSync(
+        transcriptPath,
+        `\n${encodeUnknownJsonString({
+          message: {
+            model: "claude-sonnet-5",
+            content: [
+              {
+                type: "tool_use",
+                id: "tool-codex-waiting",
+                name: "mcp__codex__codex",
+                input: delegatedToolInput,
+              },
+            ],
+          },
+        })}`,
+      );
+      const waitingEventFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.type === "task.progress"),
+        Stream.take(1),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      harness.query.emit({
+        type: "system",
+        subtype: "task_progress",
+        task_id: "workflow-task-waiting",
+        description: "Codex review",
+        usage: { total_tokens: 42, tool_uses: 1, duration_ms: 600 },
+        session_id: "sdk-session-workflow-waiting",
+        uuid: "workflow-task-progress-waiting",
+      } as unknown as SDKMessage);
+
+      const waitingEvent = Array.from(yield* Fiber.join(waitingEventFiber))[0];
+      assert.equal(waitingEvent?.type, "task.progress");
+      if (waitingEvent?.type === "task.progress") {
+        assert.deepEqual(waitingEvent.payload.workflowProgress, [
+          {
+            type: "workflow_agent",
+            agentId: "agent-codex",
+            agentType: "codex",
+            label: "review:codex",
+            phaseTitle: "Review",
+            model: "claude-sonnet-5",
+            state: "start",
+            delegationState: "requested",
+            delegatedProvider: "openai",
+            delegatedVia: "mcp__codex__codex",
+            delegatedModel: "gpt-5.6-sol",
+            delegatedReasoningEffort: "high",
+            claudeWrapperPrompt,
+            delegatedToolUseId: "tool-codex-waiting",
+            delegatedPrompt: "Inspect the package metadata without changing files.",
+            delegatedToolInput: delegatedToolInputText,
+            delegatedSandbox: "read-only",
+            delegatedApprovalPolicy: "never",
           },
         ]);
       }

@@ -1787,9 +1787,12 @@ function ChatViewContent(props: ChatViewProps) {
     selectedProvider: selectedProviderByThreadId,
     threadProvider,
   });
+  const claudeWorkflowRuns = useMemo(
+    () => deriveClaudeWorkflowRuns(activeThread?.activities ?? []),
+    [activeThread?.activities],
+  );
   const openClaudeWorkflowNavigator = useCallback(() => {
-    const workflows = deriveClaudeWorkflowRuns(activeThread?.activities ?? []);
-    if (lockedProvider !== "claudeAgent" || workflows.length === 0) {
+    if (lockedProvider !== "claudeAgent" || claudeWorkflowRuns.length === 0) {
       toastManager.add(
         stackedThreadToast({
           type: "info",
@@ -1803,7 +1806,7 @@ function ChatViewContent(props: ChatViewProps) {
       return;
     }
     requestClaudeWorkflowNavigatorOpen();
-  }, [activeThread?.activities, lockedProvider]);
+  }, [claudeWorkflowRuns.length, lockedProvider]);
   // Once a thread selects an environment, never substitute the primary
   // environment's config while the selected environment is still loading.
   const serverConfig = activeThread
@@ -5616,6 +5619,12 @@ function ChatViewContent(props: ChatViewProps) {
                   : "pointer-events-none absolute inset-x-0 bottom-0 z-20 pt-1.5 sm:pt-2"
               }
             >
+              {!isDraftHeroState ? (
+                <div
+                  aria-hidden
+                  className="absolute inset-x-0 bottom-0 h-[calc(env(safe-area-inset-bottom)+3.25rem)] bg-background"
+                />
+              ) : null}
               <div
                 ref={attachDraftHeroTransitionGroupRef}
                 className="chat-composer-horizontal-inset w-full"
@@ -5651,6 +5660,14 @@ function ChatViewContent(props: ChatViewProps) {
                         : undefined
                     }
                   >
+                    {lockedProvider === "claudeAgent" ? (
+                      <ClaudeWorkflowNavigator
+                        activities={activeThread.activities}
+                        branch={activeThreadBranch}
+                        parentModel={activeThread.modelSelection.model}
+                        onStopWorkflow={(taskId) => void onStopClaudeWorkflow(taskId)}
+                      />
+                    ) : null}
                     <div className="chat-composer-glass-host mx-auto w-full max-w-3xl rounded-[22px]">
                       <div ref={attachDraftHeroComposerAnchorRef} className="relative z-10">
                         <ChatComposer
@@ -5730,49 +5747,46 @@ function ChatViewContent(props: ChatViewProps) {
                           onExpandImage={onExpandTimelineImage}
                         />
                       </div>
-                      <div className="min-h-0">
+                    </div>
+                    {isGitRepo ? (
+                      <div className="mx-auto w-full max-w-3xl">
                         <div
                           data-terminal-open={terminalUiState.terminalOpen ? "true" : undefined}
-                          className="relative z-0"
+                          className="relative"
                         >
-                          {isGitRepo && (
-                            <div className="pointer-events-auto">
-                              <BranchToolbar
-                                environmentId={activeThread.environmentId}
-                                threadId={activeThread.id}
-                                {...(routeKind === "draft" && draftId ? { draftId } : {})}
-                                onEnvModeChange={onEnvModeChange}
-                                startFromOrigin={startFromOrigin}
-                                onStartFromOriginChange={onStartFromOriginChange}
-                                {...(canOverrideServerThreadEnvMode
-                                  ? { effectiveEnvModeOverride: envMode }
-                                  : {})}
-                                {...(canOverrideServerThreadEnvMode
-                                  ? {
-                                      activeThreadBranchOverride: activeThreadBranch,
-                                      onActiveThreadBranchOverrideChange:
-                                        setPendingServerThreadBranch,
-                                    }
-                                  : {})}
-                                envLocked={envLocked}
-                                onComposerFocusRequest={scheduleComposerFocus}
-                                {...(canCheckoutPullRequestIntoThread
-                                  ? { onCheckoutPullRequestRequest: openPullRequestDialog }
-                                  : {})}
-                                {...(hasMultipleEnvironments ? { onEnvironmentChange } : {})}
-                                availableEnvironments={logicalProjectEnvironments}
-                              />
-                            </div>
-                          )}
+                          <div className="pointer-events-auto">
+                            <BranchToolbar
+                              environmentId={activeThread.environmentId}
+                              threadId={activeThread.id}
+                              {...(routeKind === "draft" && draftId ? { draftId } : {})}
+                              onEnvModeChange={onEnvModeChange}
+                              startFromOrigin={startFromOrigin}
+                              onStartFromOriginChange={onStartFromOriginChange}
+                              {...(canOverrideServerThreadEnvMode
+                                ? { effectiveEnvModeOverride: envMode }
+                                : {})}
+                              {...(canOverrideServerThreadEnvMode
+                                ? {
+                                    activeThreadBranchOverride: activeThreadBranch,
+                                    onActiveThreadBranchOverrideChange:
+                                      setPendingServerThreadBranch,
+                                  }
+                                : {})}
+                              envLocked={envLocked}
+                              onComposerFocusRequest={scheduleComposerFocus}
+                              {...(canCheckoutPullRequestIntoThread
+                                ? { onCheckoutPullRequestRequest: openPullRequestDialog }
+                                : {})}
+                              {...(hasMultipleEnvironments ? { onEnvironmentChange } : {})}
+                              availableEnvironments={logicalProjectEnvironments}
+                              workflowHistoryCount={
+                                lockedProvider === "claudeAgent" ? claudeWorkflowRuns.length : 0
+                              }
+                              onOpenWorkflows={openClaudeWorkflowNavigator}
+                            />
+                          </div>
                         </div>
                       </div>
-                    </div>
-                    {lockedProvider === "claudeAgent" ? (
-                      <ClaudeWorkflowNavigator
-                        activities={activeThread.activities}
-                        branch={activeThreadBranch}
-                        onStopWorkflow={(taskId) => void onStopClaudeWorkflow(taskId)}
-                      />
                     ) : null}
                     <div
                       aria-hidden

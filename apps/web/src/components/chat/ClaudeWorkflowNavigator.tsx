@@ -4,7 +4,6 @@ import {
   ArrowRightIcon,
   CheckIcon,
   ChevronDownIcon,
-  ChevronLeftIcon,
   ChevronRightIcon,
   CircleIcon,
   Clock3Icon,
@@ -19,14 +18,20 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   deriveClaudeWorkflowRuns,
   findActiveClaudeWorkflowRunIndex,
+  formatWorkflowModelName,
   inferClaudeWorkflowModelProvider,
   type ClaudeWorkflowAgent,
   type ClaudeWorkflowPhase,
   type ClaudeWorkflowRun,
   type ClaudeWorkflowStatus,
 } from "../../claude-workflows";
-import { onClaudeWorkflowNavigatorOpen } from "../../claudeWorkflowNavigatorBus";
+import {
+  onClaudeWorkflowNavigatorOpen,
+  requestClaudeWorkflowNavigatorOpen,
+} from "../../claudeWorkflowNavigatorBus";
+import ChatMarkdown from "../ChatMarkdown";
 import { ClaudeAI, OpenAI } from "../Icons";
+import { stackedThreadToast, toastManager } from "../ui/toast";
 import { cn } from "~/lib/utils";
 
 function compactNumber(value: number): string {
@@ -81,6 +86,7 @@ function StatusMark(props: { status: ClaudeWorkflowStatus; className?: string })
 }
 
 function RunMetrics(props: {
+  label?: string;
   tokens: number;
   toolUses: number;
   durationMs: number;
@@ -88,6 +94,11 @@ function RunMetrics(props: {
 }) {
   return (
     <span className="flex shrink-0 items-center gap-2 font-mono text-[10px] text-muted-foreground/55">
+      {props.label ? (
+        <span className="text-[8px] uppercase tracking-[0.08em] text-muted-foreground/35">
+          {props.label}
+        </span>
+      ) : null}
       {props.tokens > 0 ? <span>{compactNumber(props.tokens)} tok</span> : null}
       {props.toolUses > 0 ? (
         <span className="inline-flex items-center gap-1">
@@ -107,6 +118,76 @@ function phaseStartedAt(phase: ClaudeWorkflowPhase): number | undefined {
     agent.status === "running" && agent.startedAtMs !== undefined ? [agent.startedAtMs] : [],
   );
   return startedAtValues.length > 0 ? Math.min(...startedAtValues) : undefined;
+}
+
+function delegationCounts(agents: ReadonlyArray<ClaudeWorkflowAgent>) {
+  return {
+    requested: agents.filter((agent) => agent.delegationState !== undefined).length,
+    results: agents.filter((agent) => agent.delegationState === "result_received").length,
+    finalized: agents.filter((agent) => agent.status === "completed").length,
+  };
+}
+
+function workflowProgressLabel(agents: ReadonlyArray<ClaudeWorkflowAgent>): string {
+  const counts = delegationCounts(agents);
+  if (counts.requested > 0) {
+    return `${counts.results}/${counts.requested} Codex results · ${counts.finalized}/${agents.length} finalized`;
+  }
+  return `${counts.finalized}/${agents.length} complete`;
+}
+
+function workflowDockStatus(run: ClaudeWorkflowRun): {
+  label: string;
+  tone: "working" | "waiting" | "paused" | "finalizing" | "completed" | "failed";
+} {
+  if (run.status === "completed") return { label: "Completed", tone: "completed" };
+  if (run.status === "failed") return { label: "Failed", tone: "failed" };
+  if (run.status === "stopped") return { label: "Stopped", tone: "paused" };
+  const waitingAgent = run.agents.find((agent) => agent.delegationState === "requested");
+  if (waitingAgent) {
+    return {
+      label: `Waiting for ${formatWorkflowModelName(waitingAgent.delegatedModel, "Codex")}`,
+      tone: "waiting",
+    };
+  }
+  if (run.status === "paused") return { label: "Paused", tone: "paused" };
+  const counts = delegationCounts(run.agents);
+  if (counts.results > 0 && counts.finalized < run.agents.length) {
+    return { label: "Finalizing", tone: "finalizing" };
+  }
+  return {
+    label: "Working",
+    tone: "working",
+  };
+}
+
+function agentActivityLabel(agent: ClaudeWorkflowAgent): string | null {
+  const runnerModel = formatWorkflowModelName(agent.model, "Runner");
+  const delegatedModel = formatWorkflowModelName(agent.delegatedModel, "Codex");
+  if (agent.status === "paused") return "Paused";
+  if (agent.status === "failed") return "Failed";
+  if (agent.status === "stopped") return "Stopped";
+  if (agent.status === "completed") return "Finalized";
+  if (agent.delegationState === "result_received") {
+    return `${runnerModel} · ${agent.lastToolName ?? `finalizing ${delegatedModel} result`}`;
+  }
+  if (agent.delegationState === "requested") {
+    return `${delegatedModel} · ${agent.lastToolName ?? "delegated call"} running`;
+  }
+  if (agent.lastToolName) return `${runnerModel} · ${agent.lastToolName}`;
+  return agent.status === "running" ? "Starting wrapper" : null;
+}
+
+function workflowRunnerModel(
+  agents: ReadonlyArray<ClaudeWorkflowAgent>,
+  fallback?: string | null,
+): string {
+  const models = Array.from(
+    new Set(agents.flatMap((agent) => (agent.model ? [formatWorkflowModelName(agent.model)] : []))),
+  );
+  if (models.length === 1) return models[0]!;
+  if (models.length > 1) return "Mixed runners";
+  return formatWorkflowModelName(fallback, "Runner");
 }
 
 function PhaseRow(props: {
@@ -132,8 +213,9 @@ function PhaseRow(props: {
       </span>
       <span className="min-w-0 flex-1 truncate text-[12px]">{props.phase.title}</span>
       <span className="font-mono text-[10px] text-muted-foreground/45">
-        {props.phase.agents.filter((agent) => agent.status === "completed").length}/
-        {props.phase.agents.length}
+        {delegationCounts(props.phase.agents).requested > 0
+          ? `${delegationCounts(props.phase.agents).results}/${delegationCounts(props.phase.agents).requested} results`
+          : `${delegationCounts(props.phase.agents).finalized}/${props.phase.agents.length}`}
       </span>
     </button>
   );
@@ -150,7 +232,9 @@ function WorkflowModelLabel(props: { model: string; provider?: "claude" | "opena
           className={cn("size-3 shrink-0", provider === "claude" && "opacity-90")}
         />
       ) : null}
-      <span className="truncate">{props.model}</span>
+      <span className="truncate" title={props.model}>
+        {formatWorkflowModelName(props.model)}
+      </span>
     </span>
   );
 }
@@ -158,32 +242,98 @@ function WorkflowModelLabel(props: { model: string; provider?: "claude" | "opena
 function WorkflowModelAttribution(props: { agent: ClaudeWorkflowAgent }) {
   const wrapperModel = props.agent.model ?? "Claude wrapper";
   const delegatedModel = props.agent.delegatedModel ?? "Codex · model not reported";
-  const hasVerifiedDelegation = Boolean(props.agent.delegatedProvider && props.agent.delegatedVia);
-  const title = hasVerifiedDelegation
-    ? `Runner: ${wrapperModel}. Delegated via ${props.agent.delegatedVia}: ${delegatedModel}${props.agent.delegatedReasoningEffort ? ` (${props.agent.delegatedReasoningEffort} reasoning)` : ""}.`
+  const hasDelegation = Boolean(props.agent.delegatedProvider && props.agent.delegatedVia);
+  const verified = props.agent.delegationState !== "requested";
+  const title = hasDelegation
+    ? `Runner: ${wrapperModel}. ${verified ? "Verified result from" : "Requested"} ${delegatedModel} via ${props.agent.delegatedVia}${props.agent.delegatedReasoningEffort ? ` (${props.agent.delegatedReasoningEffort} reasoning)` : ""}.`
     : `Runner: ${wrapperModel}.`;
 
   return (
     <span className="flex min-w-0 items-center gap-1.5" title={title}>
       <WorkflowModelLabel model={wrapperModel} provider="claude" />
-      {hasVerifiedDelegation ? (
+      {hasDelegation ? (
         <>
           <ArrowRightIcon className="size-2.5 shrink-0 text-muted-foreground/30" />
-          <WorkflowModelLabel
-            model={delegatedModel}
-            provider={props.agent.delegatedProvider ?? null}
-          />
+          <span className={cn("min-w-0", !verified && "opacity-55")}>
+            <WorkflowModelLabel
+              model={delegatedModel}
+              provider={props.agent.delegatedProvider ?? null}
+            />
+          </span>
+          {!verified ? (
+            <span className="shrink-0 text-[8px] uppercase tracking-[0.08em] text-sky-300/55">
+              requested
+            </span>
+          ) : null}
         </>
       ) : null}
     </span>
   );
 }
 
+function AgentUsageSummary(props: { agent: ClaudeWorkflowAgent }) {
+  const codexUsageReported =
+    props.agent.delegatedTokens !== undefined || props.agent.delegatedToolUses !== undefined;
+  const codexState =
+    props.agent.delegationState === "requested"
+      ? "running"
+      : props.agent.delegationState === "result_received"
+        ? "result ready"
+        : "—";
+
+  return (
+    <span className="grid justify-items-end gap-0.5 font-mono text-[9px] leading-tight">
+      <span
+        className="flex max-w-full items-center justify-end gap-1.5 text-muted-foreground/55"
+        title={`${formatWorkflowModelName(props.agent.model, "Runner")} usage`}
+      >
+        <ClaudeAI aria-hidden="true" className="size-2.5 shrink-0 opacity-65" />
+        <span className="shrink-0">{compactNumber(props.agent.tokens)} tok</span>
+        <span className="shrink-0 text-muted-foreground/35">
+          {props.agent.toolUses} {props.agent.toolUses === 1 ? "tool" : "tools"}
+        </span>
+      </span>
+      {props.agent.delegatedProvider ? (
+        <span
+          className={cn(
+            "flex max-w-full items-center justify-end gap-1.5",
+            props.agent.delegationState === "requested"
+              ? "text-sky-300/65"
+              : "text-muted-foreground/45",
+          )}
+          title={`${formatWorkflowModelName(props.agent.delegatedModel, "Codex")} usage`}
+        >
+          <OpenAI aria-hidden="true" className="size-2.5 shrink-0 opacity-65" />
+          {codexUsageReported ? (
+            <>
+              <span className="shrink-0">
+                {props.agent.delegatedTokens !== undefined
+                  ? `${compactNumber(props.agent.delegatedTokens)} tok`
+                  : "tokens —"}
+              </span>
+              <span className="shrink-0 text-muted-foreground/35">
+                {props.agent.delegatedToolUses !== undefined
+                  ? `${props.agent.delegatedToolUses} ${
+                      props.agent.delegatedToolUses === 1 ? "tool" : "tools"
+                    }`
+                  : "tools —"}
+              </span>
+            </>
+          ) : (
+            <span className="shrink-0">{codexState}</span>
+          )}
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
 function AgentRow(props: { agent: ClaudeWorkflowAgent; onSelect: () => void }) {
+  const activityLabel = agentActivityLabel(props.agent);
   return (
     <button
       type="button"
-      className="group grid w-full grid-cols-[minmax(0,1fr)_minmax(12rem,1fr)_4.5rem_3.5rem_4rem_3rem] items-center gap-3 border-t border-white/[0.045] px-2 py-2 text-left transition-colors first:border-t-0 hover:bg-white/[0.045]"
+      className="group grid w-full grid-cols-[minmax(10rem,1fr)_minmax(15rem,1.35fr)_7.5rem_4.25rem_2.5rem] items-center gap-3 border-t border-white/[0.045] px-3 py-2.5 text-left transition-colors first:border-t-0 hover:bg-white/[0.045]"
       onClick={props.onSelect}
     >
       <span className="flex min-w-0 items-center gap-2">
@@ -192,9 +342,9 @@ function AgentRow(props: { agent: ClaudeWorkflowAgent; onSelect: () => void }) {
           <span className="block truncate font-mono text-[11px] text-foreground/85">
             {props.agent.title}
           </span>
-          {props.agent.lastToolName ? (
+          {activityLabel ? (
             <span className="block truncate text-[9px] text-muted-foreground/35">
-              current tool · {props.agent.lastToolName}
+              {activityLabel}
             </span>
           ) : null}
         </span>
@@ -202,12 +352,7 @@ function AgentRow(props: { agent: ClaudeWorkflowAgent; onSelect: () => void }) {
       <span className="min-w-0 font-mono text-[10px] text-muted-foreground/55">
         <WorkflowModelAttribution agent={props.agent} />
       </span>
-      <span className="text-right font-mono text-[10px] text-muted-foreground/55">
-        {compactNumber(props.agent.tokens)}
-      </span>
-      <span className="text-right font-mono text-[10px] text-muted-foreground/55">
-        {props.agent.toolUses}
-      </span>
+      <AgentUsageSummary agent={props.agent} />
       <span className="text-right font-mono text-[10px] text-muted-foreground/55">
         <ElapsedText
           durationMs={props.agent.durationMs}
@@ -224,7 +369,131 @@ function AgentRow(props: { agent: ClaudeWorkflowAgent; onSelect: () => void }) {
   );
 }
 
-function AgentDetail(props: { agent: ClaudeWorkflowAgent; onBack: () => void }) {
+function PromptDisclosure(props: {
+  provider: "claude" | "openai";
+  model: string;
+  title: string;
+  detail?: string;
+  value: string;
+  defaultOpen?: boolean;
+}) {
+  const [open, setOpen] = useState(props.defaultOpen ?? false);
+  return (
+    <section className="border-b border-white/[0.055] last:border-b-0">
+      <button
+        type="button"
+        className="group flex w-full min-w-0 items-center gap-2 py-2.5 text-left"
+        onClick={() => setOpen((current) => !current)}
+        aria-expanded={open}
+      >
+        <ChevronRightIcon
+          className={cn(
+            "size-3 shrink-0 text-muted-foreground/35 transition-transform",
+            open && "rotate-90",
+          )}
+        />
+        <span className="min-w-0 shrink-0 font-mono text-[10px] text-foreground/75">
+          <WorkflowModelLabel model={props.model} provider={props.provider} />
+        </span>
+        <span className="min-w-0 flex-1 truncate text-[11px] text-foreground/75">
+          {props.title}
+        </span>
+        {props.detail ? (
+          <span className="max-w-72 truncate font-mono text-[8px] text-muted-foreground/30">
+            {props.detail}
+          </span>
+        ) : null}
+      </button>
+      {open ? (
+        <div className="mb-3 ml-5 max-h-56 overflow-auto border-l border-white/[0.08] pl-3 pr-2">
+          <pre className="whitespace-pre-wrap break-words font-mono text-[10px] leading-relaxed text-foreground/65">
+            {props.value}
+          </pre>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+function DelegationFlow(props: {
+  agent: ClaudeWorkflowAgent;
+  parentModel?: string | null | undefined;
+}) {
+  const wrapperModel = formatWorkflowModelName(props.agent.model, "Sonnet");
+  const delegatedModel = formatWorkflowModelName(props.agent.delegatedModel, "GPT-5.6-Sol");
+  const parentModel = formatWorkflowModelName(props.parentModel, "parent thread");
+  const resultReceived = props.agent.delegationState === "result_received";
+  const resultRequested = props.agent.delegationState === "requested";
+
+  return (
+    <section className="border-b border-white/[0.055] pb-3">
+      <p className="mb-2 font-mono text-[8px] uppercase tracking-[0.14em] text-muted-foreground/35">
+        Delegation
+      </p>
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5 text-[11px]">
+        <span className="font-mono text-foreground/75">
+          <WorkflowModelLabel model={wrapperModel} provider="claude" />
+        </span>
+        <ArrowRightIcon className="size-3 shrink-0 text-muted-foreground/30" />
+        <span className="font-mono text-foreground/80">
+          <WorkflowModelLabel model={`Call ${delegatedModel}`} provider="openai" />
+        </span>
+        <span
+          className={cn(
+            "font-mono text-[8px] uppercase tracking-[0.1em]",
+            resultRequested
+              ? "text-sky-300/75"
+              : resultReceived
+                ? "text-emerald-300/70"
+                : "text-muted-foreground/35",
+          )}
+        >
+          {resultRequested ? "running" : resultReceived ? "result received" : props.agent.status}
+        </span>
+        {resultReceived ? (
+          <>
+            <ArrowRightIcon className="size-3 shrink-0 text-muted-foreground/30" />
+            <span className="inline-flex items-center gap-1.5 text-emerald-200/70">
+              <CheckIcon className="size-3" />
+              Returned to {parentModel}
+            </span>
+          </>
+        ) : null}
+      </div>
+      <p className="mt-1.5 text-[9px] text-muted-foreground/35">
+        {resultRequested
+          ? `${wrapperModel} is waiting for the ${delegatedModel} result.`
+          : resultReceived
+            ? `${delegatedModel} returned through the ${wrapperModel} wrapper to ${parentModel}.`
+            : `${wrapperModel} has not recorded a Codex result yet.`}
+        {props.agent.delegatedReasoningEffort
+          ? ` ${props.agent.delegatedReasoningEffort} reasoning.`
+          : ""}
+      </p>
+    </section>
+  );
+}
+
+function AgentDetail(props: {
+  agent: ClaudeWorkflowAgent;
+  parentModel?: string | null | undefined;
+  onBack: () => void;
+}) {
+  const claudeWrapperPrompt = props.agent.claudeWrapperPrompt ?? props.agent.prompt;
+  const wrapperModel = formatWorkflowModelName(props.agent.model, "Sonnet");
+  const delegatedModel = formatWorkflowModelName(props.agent.delegatedModel, "GPT-5.6-Sol");
+  const codexWorkSummary = [
+    props.agent.activitySummary,
+    props.agent.recentTools.length > 0
+      ? `Recorded wrapper tools: ${props.agent.recentTools.join(", ")}.`
+      : undefined,
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+  const resultMarkdown =
+    props.agent.delegatedResultPreview ??
+    (props.agent.delegatedProvider ? undefined : props.agent.summary);
+
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex items-center gap-2 border-b border-white/[0.06] px-3 py-2">
@@ -244,6 +513,7 @@ function AgentDetail(props: { agent: ClaudeWorkflowAgent; onBack: () => void }) 
           <WorkflowModelAttribution agent={props.agent} />
         </span>
         <RunMetrics
+          label={formatWorkflowModelName(props.agent.model, "Runner")}
           tokens={props.agent.tokens}
           toolUses={props.agent.toolUses}
           durationMs={props.agent.durationMs}
@@ -252,66 +522,97 @@ function AgentDetail(props: { agent: ClaudeWorkflowAgent; onBack: () => void }) 
             : {})}
         />
       </div>
-      <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3 text-[11px] leading-relaxed">
-        {props.agent.prompt ? (
-          <section>
-            <p className="mb-1 font-mono text-[9px] uppercase tracking-[0.14em] text-muted-foreground/40">
-              Prompt
-            </p>
-            <p className="whitespace-pre-wrap text-foreground/70">{props.agent.prompt}</p>
-          </section>
-        ) : null}
+      <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-5 pt-3 text-[11px] leading-relaxed">
         {props.agent.delegatedProvider && props.agent.delegatedVia ? (
-          <section>
-            <p className="mb-1 font-mono text-[9px] uppercase tracking-[0.14em] text-muted-foreground/40">
-              Execution provenance
-            </p>
-            <div className="flex flex-wrap items-center gap-1.5 font-mono text-[10px] text-foreground/70">
-              <WorkflowModelLabel model={props.agent.model ?? "Claude wrapper"} provider="claude" />
-              <ArrowRightIcon className="size-2.5 text-muted-foreground/35" />
-              <WorkflowModelLabel
-                model={props.agent.delegatedModel ?? "Codex · model not reported"}
-                provider={props.agent.delegatedProvider ?? null}
-              />
-              {props.agent.delegatedReasoningEffort ? (
-                <span className="text-muted-foreground/45">
-                  · {props.agent.delegatedReasoningEffort} reasoning
+          <DelegationFlow agent={props.agent} parentModel={props.parentModel} />
+        ) : null}
+        {claudeWrapperPrompt ? (
+          <PromptDisclosure
+            provider="claude"
+            model={wrapperModel}
+            title={`Prompt given to ${wrapperModel}`}
+            detail="Exact wrapper packet"
+            value={claudeWrapperPrompt}
+            defaultOpen
+          />
+        ) : null}
+        {props.agent.delegatedPrompt ? (
+          <PromptDisclosure
+            provider="openai"
+            model={delegatedModel}
+            title={`Prompt sent to ${delegatedModel}`}
+            detail={props.agent.delegatedVia ?? "Codex MCP call"}
+            value={props.agent.delegatedPrompt}
+          />
+        ) : null}
+        {codexWorkSummary ? (
+          <PromptDisclosure
+            provider="openai"
+            model={delegatedModel}
+            title="Recorded work"
+            detail={`${props.agent.toolUses} wrapper tool${props.agent.toolUses === 1 ? "" : "s"}`}
+            value={codexWorkSummary}
+          />
+        ) : null}
+        {props.agent.delegatedProvider ? (
+          <section className="pt-3">
+            <div className="mb-2 flex min-w-0 items-center justify-between gap-3">
+              <p className="flex items-center gap-2 text-[11px] font-medium text-foreground/80">
+                <OpenAI className="size-3.5 shrink-0" />
+                GPT‑5.6 result
+              </p>
+              {props.agent.delegatedThreadId ? (
+                <span className="max-w-72 truncate font-mono text-[8px] text-muted-foreground/30">
+                  thread · {props.agent.delegatedThreadId}
                 </span>
               ) : null}
             </div>
-            <p className="mt-1 text-[9px] text-muted-foreground/35">
-              Verified from the {props.agent.delegatedVia} tool call recorded in this agent’s
-              transcript.
-            </p>
-          </section>
-        ) : null}
-        {props.agent.recentTools.length > 0 ? (
-          <section>
-            <p className="mb-1 font-mono text-[9px] uppercase tracking-[0.14em] text-muted-foreground/40">
-              Recent tools · {props.agent.toolUses} calls
-            </p>
-            <div className="space-y-1">
-              {props.agent.recentTools.map((toolName) => (
-                <p
-                  key={toolName}
-                  className="flex items-center gap-1.5 font-mono text-foreground/70"
-                >
-                  <WrenchIcon className="size-3 text-sky-400/70" />
-                  {toolName}
+            {resultMarkdown ? (
+              <div className="border-l border-emerald-400/30 pl-3 text-foreground/75">
+                <ChatMarkdown
+                  text={resultMarkdown}
+                  cwd={undefined}
+                  isStreaming={false}
+                  className="text-[11px] leading-relaxed"
+                />
+              </div>
+            ) : props.agent.delegationState === "requested" ? (
+              <div className="border-l border-sky-400/30 pl-3">
+                <p className="flex items-center gap-2 text-sky-300/70">
+                  <LoaderCircleIcon className="size-3.5 animate-spin" />
+                  GPT‑5.6 is working. The result will appear here.
                 </p>
-              ))}
-            </div>
+                <p className="mt-1 text-[9px] text-muted-foreground/30">
+                  Codex MCP reports the final result; it does not expose hidden intermediate
+                  reasoning.
+                </p>
+              </div>
+            ) : (
+              <p className="text-muted-foreground/40">
+                The call completed without a readable result preview.
+              </p>
+            )}
+            {resultMarkdown ? (
+              <p className="mt-3 flex items-center gap-1.5 text-[9px] text-emerald-200/55">
+                <CheckIcon className="size-3" />
+                Returned through {wrapperModel} to{" "}
+                {formatWorkflowModelName(props.parentModel, "the parent thread")}
+              </p>
+            ) : null}
           </section>
-        ) : null}
-        {props.agent.summary ? (
-          <section>
-            <p className="mb-1 font-mono text-[9px] uppercase tracking-[0.14em] text-muted-foreground/40">
-              Result
-            </p>
-            <p className="whitespace-pre-wrap text-foreground/70">{props.agent.summary}</p>
+        ) : props.agent.summary ? (
+          <section className="pt-3">
+            <ChatMarkdown
+              text={props.agent.summary}
+              cwd={undefined}
+              isStreaming={false}
+              className="text-[11px] leading-relaxed text-foreground/75"
+            />
           </section>
-        ) : null}
-        {!props.agent.prompt && props.agent.recentTools.length === 0 && !props.agent.summary ? (
+        ) : !props.agent.prompt &&
+          props.agent.recentTools.length === 0 &&
+          !props.agent.activitySummary &&
+          !props.agent.summary ? (
           <p className="text-muted-foreground/45">Waiting for this agent’s first update…</p>
         ) : null}
       </div>
@@ -324,7 +625,6 @@ function WorkflowRunRow(props: {
   selected: boolean;
   onSelect: () => void;
 }) {
-  const completed = props.run.agents.filter((agent) => agent.status === "completed").length;
   return (
     <button
       type="button"
@@ -343,9 +643,150 @@ function WorkflowRunRow(props: {
         </span>
       </span>
       <span className="mt-1 block pl-[22px] font-mono text-[9px] text-muted-foreground/40">
-        {completed}/{props.run.agents.length} complete
+        {workflowProgressLabel(props.run.agents)}
       </span>
     </button>
+  );
+}
+
+function WorkflowDockRow(props: {
+  run: ClaudeWorkflowRun;
+  expanded: boolean;
+  parentModel?: string | null;
+  onOpen: () => void;
+}) {
+  const status = workflowDockStatus(props.run);
+  const parentModel = formatWorkflowModelName(
+    props.parentModel ?? props.run.agents[0]?.model,
+    "Fable",
+  );
+  return (
+    <button
+      type="button"
+      data-claude-workflow-dock-row="true"
+      className="group grid min-h-12 w-full grid-cols-[auto_auto_minmax(0,1fr)_auto] items-center gap-x-3 border-t border-white/[0.055] px-3.5 py-2.5 text-left first:border-t-0 transition-colors hover:bg-white/[0.035]"
+      onClick={props.onOpen}
+      aria-expanded={props.expanded}
+      aria-label={`Open workflow ${props.run.name}`}
+    >
+      <StatusMark status={props.run.status} />
+      <GitBranchIcon className="size-3.5 shrink-0 text-violet-300/70" />
+      <span className="min-w-0">
+        <span className="block truncate font-mono text-[11px] text-foreground/85">
+          {props.run.name}
+        </span>
+        <span className="mt-0.5 flex min-w-0 items-center gap-1.5 font-mono text-[9px]">
+          <span className="shrink-0 text-muted-foreground/45">{parentModel}</span>
+          <span className="text-muted-foreground/25">·</span>
+          <span
+            className={cn(
+              "truncate",
+              status.tone === "waiting"
+                ? "text-violet-200/75"
+                : status.tone === "paused"
+                  ? "text-amber-300/70"
+                  : status.tone === "failed"
+                    ? "text-red-300/70"
+                    : status.tone === "finalizing"
+                      ? "text-emerald-300/65"
+                      : status.tone === "completed"
+                        ? "text-emerald-300/65"
+                        : "text-sky-300/65",
+            )}
+          >
+            {status.label}
+          </span>
+        </span>
+      </span>
+      <span className="flex shrink-0 items-center gap-3">
+        <span className="hidden font-mono text-[9px] text-muted-foreground/40 md:inline">
+          {workflowProgressLabel(props.run.agents)}
+        </span>
+        <span className="font-mono text-[9px] text-muted-foreground/45">
+          <ElapsedText
+            durationMs={props.run.durationMs}
+            {...(props.run.status === "running" ? { startedAt: props.run.startedAt } : {})}
+          />
+        </span>
+        <ChevronDownIcon
+          className={cn(
+            "size-3.5 shrink-0 text-muted-foreground/35 transition-transform duration-150 group-hover:text-muted-foreground/65",
+            props.expanded && "rotate-180",
+          )}
+        />
+      </span>
+    </button>
+  );
+}
+
+function useWorkflowDelegationToasts(workflows: ReadonlyArray<ClaudeWorkflowRun>) {
+  const initializedRef = useRef(false);
+  const previousCountsRef = useRef(
+    new Map<string, { requested: number; results: number; finalized: number }>(),
+  );
+  const toastIdsRef = useRef(new Map<string, ReturnType<typeof toastManager.add>>());
+
+  useEffect(() => {
+    const nextCounts = new Map<string, ReturnType<typeof delegationCounts>>();
+
+    for (const workflow of workflows) {
+      const counts = delegationCounts(workflow.agents);
+      nextCounts.set(workflow.id, counts);
+      const previous = previousCountsRef.current.get(workflow.id);
+      if (!initializedRef.current || counts.requested === 0) continue;
+
+      const changed =
+        !previous ||
+        counts.requested !== previous.requested ||
+        counts.results !== previous.results ||
+        counts.finalized !== previous.finalized;
+      if (!changed) continue;
+
+      const allFinalized =
+        counts.requested > 0 &&
+        counts.results === counts.requested &&
+        counts.finalized === workflow.agents.length;
+      const description =
+        counts.results === 0
+          ? `${counts.requested} GPT-5.6-Sol worker${counts.requested === 1 ? "" : "s"} requested. Waiting for Codex results.`
+          : `${counts.results} of ${counts.requested} Codex results received · ${counts.finalized} of ${workflow.agents.length} agents finalized.`;
+      const nextToast = stackedThreadToast({
+        type: allFinalized ? "success" : counts.results > 0 ? "info" : "loading",
+        title: allFinalized
+          ? "Codex workflow finalized"
+          : counts.results > 0
+            ? "Codex results arriving"
+            : "Codex delegation requested",
+        description,
+        timeout: 0,
+        actionProps: {
+          children: "View workflow",
+          onClick: () => requestClaudeWorkflowNavigatorOpen({ workflowRunId: workflow.id }),
+        },
+        actionVariant: "outline",
+        data: {
+          hideCopyButton: true,
+          ...(allFinalized ? { dismissAfterVisibleMs: 5_000 } : {}),
+        },
+      });
+      const toastId = toastIdsRef.current.get(workflow.id);
+      if (toastId === undefined) {
+        toastIdsRef.current.set(workflow.id, toastManager.add(nextToast));
+      } else {
+        toastManager.update(toastId, nextToast);
+      }
+    }
+
+    previousCountsRef.current = nextCounts;
+    initializedRef.current = true;
+  }, [workflows]);
+
+  useEffect(
+    () => () => {
+      for (const toastId of toastIdsRef.current.values()) toastManager.close(toastId);
+      toastIdsRef.current.clear();
+    },
+    [],
   );
 }
 
@@ -353,6 +794,7 @@ function WorkflowPanel(props: {
   workflows: ReadonlyArray<ClaudeWorkflowRun>;
   run: ClaudeWorkflowRun;
   branchLabel: string;
+  parentModel?: string | null;
   selectedPhase: ClaudeWorkflowPhase | null;
   selectedAgent: ClaudeWorkflowAgent | null;
   onSelectRun: (run: ClaudeWorkflowRun) => void;
@@ -368,31 +810,24 @@ function WorkflowPanel(props: {
       data-claude-workflow-panel="true"
       className="absolute bottom-full left-1/2 z-30 mb-2 flex h-[min(62vh,520px)] min-h-80 w-[min(96vw,1040px)] -translate-x-1/2 animate-in flex-col overflow-hidden rounded-xl border border-white/[0.09] bg-[#151515]/98 text-foreground shadow-2xl shadow-black/45 backdrop-blur-xl fade-in slide-in-from-bottom-2 duration-150"
     >
-      <header className="flex items-start gap-3 border-b border-white/[0.07] px-3 py-2.5">
-        <GitBranchIcon className="mt-0.5 size-4 shrink-0 text-violet-300/80" />
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2">
-            <span className="truncate font-mono text-[12px] font-semibold text-violet-200/90">
-              {props.run.name}
-            </span>
-            <span className="font-mono text-[9px] uppercase tracking-[0.12em] text-muted-foreground/40">
-              {props.run.status}
-            </span>
-            <span className="truncate border-l border-white/[0.08] pl-2 font-mono text-[9px] text-muted-foreground/45">
-              branch · {props.branchLabel}
-            </span>
-          </div>
-          {props.run.summary ? (
-            <p className="mt-0.5 truncate text-[10px] text-muted-foreground/50">
-              {props.run.summary}
-            </p>
-          ) : null}
+      <header className="flex items-center gap-2.5 border-b border-white/[0.07] px-3 py-1.5">
+        <GitBranchIcon className="size-3.5 shrink-0 text-violet-300/80" />
+        <div className="flex min-w-0 flex-1 items-center gap-2">
+          <span className="truncate font-mono text-[11px] font-semibold text-violet-200/90">
+            {props.run.name}
+          </span>
+          <span className="shrink-0 font-mono text-[8px] uppercase tracking-[0.12em] text-muted-foreground/40">
+            {props.run.status}
+          </span>
+          <span className="min-w-0 truncate border-l border-white/[0.08] pl-2 font-mono text-[8px] text-muted-foreground/45">
+            branch · {props.branchLabel}
+          </span>
         </div>
         {props.workflows.length > 1 ? (
           <button
             type="button"
             className={cn(
-              "flex shrink-0 items-center gap-1 rounded-md px-1.5 py-1 font-mono text-[9px] transition-colors",
+              "flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 font-mono text-[8px] transition-colors",
               workflowListOpen
                 ? "bg-violet-400/10 text-violet-200/75"
                 : "text-muted-foreground/45 hover:bg-white/[0.05] hover:text-foreground/75",
@@ -412,10 +847,10 @@ function WorkflowPanel(props: {
           </button>
         ) : null}
         <span className="shrink-0 font-mono text-[10px] text-muted-foreground/55">
-          {props.run.agents.filter((agent) => agent.status === "completed").length}/
-          {props.run.agents.length} complete
+          {workflowProgressLabel(props.run.agents)}
         </span>
         <RunMetrics
+          label={workflowRunnerModel(props.run.agents, props.parentModel)}
           tokens={props.run.tokens}
           toolUses={props.run.toolUses}
           durationMs={props.run.durationMs}
@@ -458,13 +893,17 @@ function WorkflowPanel(props: {
           </aside>
         ) : null}
         {props.selectedAgent ? (
-          <AgentDetail agent={props.selectedAgent} onBack={props.onBackFromAgent} />
+          <AgentDetail
+            agent={props.selectedAgent}
+            parentModel={props.parentModel}
+            onBack={props.onBackFromAgent}
+          />
         ) : (
           <>
             <aside
               className={cn(
                 "shrink-0 border-r border-white/[0.06] p-2 transition-[width] duration-150",
-                workflowListOpen ? "w-44 sm:w-52" : "w-52 sm:w-64",
+                workflowListOpen ? "w-40 sm:w-48" : "w-48 sm:w-56",
               )}
             >
               <p className="mb-1.5 px-2 font-mono text-[9px] uppercase tracking-[0.14em] text-muted-foreground/35">
@@ -488,7 +927,7 @@ function WorkflowPanel(props: {
                   <p className="truncate font-mono text-[10px] font-semibold text-foreground/75">
                     {props.selectedPhase?.title ?? "Agents"}
                     {props.selectedPhase
-                      ? ` · ${props.selectedPhase.agents.filter((agent) => agent.status === "completed").length}/${props.selectedPhase.agents.length} complete`
+                      ? ` · ${workflowProgressLabel(props.selectedPhase.agents)}`
                       : ""}
                   </p>
                   {props.selectedPhase?.detail ? (
@@ -499,6 +938,7 @@ function WorkflowPanel(props: {
                 </div>
                 {props.selectedPhase ? (
                   <RunMetrics
+                    label={workflowRunnerModel(props.selectedPhase.agents, props.parentModel)}
                     tokens={props.selectedPhase.tokens}
                     toolUses={props.selectedPhase.toolUses}
                     durationMs={props.selectedPhase.durationMs}
@@ -510,11 +950,10 @@ function WorkflowPanel(props: {
               </div>
               {props.selectedPhase && props.selectedPhase.agents.length > 0 ? (
                 <div>
-                  <div className="grid grid-cols-[minmax(0,1fr)_minmax(12rem,1fr)_4.5rem_3.5rem_4rem_3rem] gap-3 border-b border-white/[0.06] px-2 pb-1.5 font-mono text-[8px] uppercase tracking-[0.12em] text-muted-foreground/30">
+                  <div className="grid grid-cols-[minmax(10rem,1fr)_minmax(15rem,1.35fr)_7.5rem_4.25rem_2.5rem] gap-3 border-b border-white/[0.06] px-3 pb-2 font-mono text-[8px] uppercase tracking-[0.12em] text-muted-foreground/35">
                     <span>Agent</span>
-                    <span>Model</span>
-                    <span className="text-right">Tokens</span>
-                    <span className="text-right">Tools</span>
+                    <span>Model route</span>
+                    <span className="text-right">Usage</span>
                     <span className="text-right">Time</span>
                     <span />
                   </div>
@@ -544,9 +983,21 @@ function WorkflowPanel(props: {
 export const ClaudeWorkflowNavigator = memo(function ClaudeWorkflowNavigator(props: {
   activities: ReadonlyArray<OrchestrationThreadActivity>;
   branch?: string | null;
+  parentModel?: string | null;
   onStopWorkflow?: (taskId: string) => void;
 }) {
   const workflows = useMemo(() => deriveClaudeWorkflowRuns(props.activities), [props.activities]);
+  useWorkflowDelegationToasts(workflows);
+  const activeWorkflows = useMemo(
+    () =>
+      workflows.filter(
+        (workflow) =>
+          workflow.status === "pending" ||
+          workflow.status === "running" ||
+          workflow.status === "paused",
+      ),
+    [workflows],
+  );
   const navigatorRef = useRef<HTMLDivElement>(null);
   const [expanded, setExpanded] = useState(false);
   const [runIndex, setRunIndex] = useState(0);
@@ -566,11 +1017,28 @@ export const ClaudeWorkflowNavigator = memo(function ClaudeWorkflowNavigator(pro
     setSelectedAgentId(null);
   }, [run?.id]);
 
-  const openActiveWorkflow = useCallback(() => {
-    const activeRunIndex = findActiveClaudeWorkflowRunIndex(workflows);
-    if (activeRunIndex !== null) setRunIndex(activeRunIndex);
-    setExpanded(true);
-  }, [workflows]);
+  const openActiveWorkflow = useCallback(
+    (target: { workflowRunId?: string; agentId?: string } = {}) => {
+      const targetedRunIndex = target.workflowRunId
+        ? workflows.findIndex((workflow) => workflow.id === target.workflowRunId)
+        : -1;
+      const nextRunIndex =
+        targetedRunIndex >= 0
+          ? targetedRunIndex
+          : (findActiveClaudeWorkflowRunIndex(workflows) ?? (workflows.length > 0 ? 0 : null));
+      if (nextRunIndex !== null) {
+        setRunIndex(nextRunIndex);
+        const nextRun = workflows[nextRunIndex];
+        const nextAgent = target.agentId
+          ? nextRun?.agents.find((agent) => agent.id === target.agentId)
+          : undefined;
+        setSelectedAgentId(nextAgent?.id ?? null);
+        setSelectedPhaseTitle(nextAgent?.phase ?? null);
+      }
+      setExpanded(true);
+    },
+    [workflows],
+  );
 
   useEffect(() => onClaudeWorkflowNavigatorOpen(openActiveWorkflow), [openActiveWorkflow]);
 
@@ -588,22 +1056,20 @@ export const ClaudeWorkflowNavigator = memo(function ClaudeWorkflowNavigator(pro
     return () => document.removeEventListener("pointerdown", handleOutsidePointerDown, true);
   }, [expanded]);
 
-  if (!run) return null;
-
-  const cycleRun = (direction: -1 | 1) => {
-    setRunIndex((current) => (current + direction + workflows.length) % workflows.length);
-  };
+  if (!run || (!expanded && activeWorkflows.length === 0)) return null;
+  const dockWorkflows = activeWorkflows.length > 0 ? activeWorkflows : [run];
 
   return (
     <div
       ref={navigatorRef}
-      className="pointer-events-auto relative mx-auto mt-1.5 mb-2 w-full max-w-3xl px-1"
+      className="pointer-events-auto relative z-0 mx-auto -mb-2 w-full max-w-3xl px-3"
     >
       {expanded ? (
         <WorkflowPanel
           workflows={workflows}
           run={run}
           branchLabel={props.branch?.trim() || "current checkout"}
+          {...(props.parentModel !== undefined ? { parentModel: props.parentModel } : {})}
           selectedPhase={selectedPhase}
           selectedAgent={selectedAgent}
           onSelectRun={(nextRun) => {
@@ -622,62 +1088,23 @@ export const ClaudeWorkflowNavigator = memo(function ClaudeWorkflowNavigator(pro
 
       <div
         data-claude-workflow-navigator="true"
-        className="flex h-9 items-center gap-2 rounded-xl bg-[#171717]/92 px-2.5 shadow-lg shadow-black/15 backdrop-blur-md"
+        className="overflow-hidden rounded-t-xl rounded-b-lg border border-white/[0.07] bg-[#1a1a1a]/96 pb-2 shadow-lg shadow-black/20 backdrop-blur-md"
       >
-        <button
-          type="button"
-          className="flex min-w-0 flex-1 items-center gap-2 text-left"
-          onClick={() => {
-            if (expanded) setExpanded(false);
-            else openActiveWorkflow();
-          }}
-          aria-expanded={expanded}
-        >
-          <StatusMark status={run.status} />
-          <GitBranchIcon className="size-3.5 shrink-0 text-violet-300/70" />
-          <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-foreground/75">
-            {run.name}
-          </span>
-          <span className="hidden font-mono text-[9px] text-muted-foreground/40 sm:inline">
-            {run.agents.filter((agent) => agent.status === "completed").length}/{run.agents.length}{" "}
-            agents
-          </span>
-          <RunMetrics
-            tokens={run.tokens}
-            toolUses={run.toolUses}
-            durationMs={run.durationMs}
-            {...(run.status === "running" ? { startedAt: run.startedAt } : {})}
+        {dockWorkflows.map((workflow) => (
+          <WorkflowDockRow
+            key={workflow.id}
+            run={workflow}
+            expanded={expanded && workflow.id === run.id}
+            {...(props.parentModel !== undefined ? { parentModel: props.parentModel } : {})}
+            onOpen={() => {
+              if (expanded && workflow.id === run.id) {
+                setExpanded(false);
+                return;
+              }
+              openActiveWorkflow({ workflowRunId: workflow.id });
+            }}
           />
-          <ChevronDownIcon
-            className={cn(
-              "size-3.5 text-muted-foreground/45 transition-transform duration-150",
-              expanded && "rotate-180",
-            )}
-          />
-        </button>
-        {workflows.length > 1 ? (
-          <div className="flex items-center border-l border-white/[0.07] pl-1">
-            <button
-              type="button"
-              className="rounded p-1 text-muted-foreground/40 transition-colors hover:bg-white/[0.05] hover:text-foreground/80"
-              onClick={() => cycleRun(-1)}
-              aria-label="Previous workflow"
-            >
-              <ChevronLeftIcon className="size-3" />
-            </button>
-            <span className="w-7 text-center font-mono text-[9px] text-muted-foreground/35">
-              {runIndex + 1}/{workflows.length}
-            </span>
-            <button
-              type="button"
-              className="rounded p-1 text-muted-foreground/40 transition-colors hover:bg-white/[0.05] hover:text-foreground/80"
-              onClick={() => cycleRun(1)}
-              aria-label="Next workflow"
-            >
-              <ChevronRightIcon className="size-3" />
-            </button>
-          </div>
-        ) : null}
+        ))}
       </div>
     </div>
   );

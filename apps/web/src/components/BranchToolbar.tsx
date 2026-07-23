@@ -7,6 +7,7 @@ import {
   FolderGitIcon,
   FolderIcon,
   MonitorIcon,
+  WorkflowIcon,
 } from "lucide-react";
 import { memo, useMemo } from "react";
 
@@ -53,6 +54,8 @@ interface BranchToolbarProps {
   onComposerFocusRequest?: () => void;
   availableEnvironments?: readonly EnvironmentOption[];
   onEnvironmentChange?: (environmentId: EnvironmentId) => void;
+  workflowHistoryCount?: number;
+  onOpenWorkflows?: () => void;
 }
 
 interface MobileRunContextSelectorProps {
@@ -208,6 +211,8 @@ export const BranchToolbar = memo(function BranchToolbar({
   onComposerFocusRequest,
   availableEnvironments,
   onEnvironmentChange,
+  workflowHistoryCount = 0,
+  onOpenWorkflows,
 }: BranchToolbarProps) {
   const threadRef = useMemo(
     () => scopeThreadRef(environmentId, threadId),
@@ -248,7 +253,7 @@ export const BranchToolbar = memo(function BranchToolbar({
   if (!hasActiveThread || !activeProject) return null;
 
   return (
-    <div className="flex w-full items-center gap-2 border-t border-border/60 px-3 py-2">
+    <div className="flex w-full items-center gap-2 px-3 pt-2">
       {isMobile ? (
         <MobileRunContextSelector
           envLocked={envLocked}
@@ -283,6 +288,26 @@ export const BranchToolbar = memo(function BranchToolbar({
           />
         </div>
       )}
+
+      {workflowHistoryCount > 0 && onOpenWorkflows ? (
+        <Button
+          type="button"
+          variant="ghost"
+          size="xs"
+          data-workflow-history-trigger="true"
+          className="shrink-0 gap-1.5 px-2 text-muted-foreground/55 hover:text-foreground/80"
+          aria-label={`Open ${workflowHistoryCount} saved ${
+            workflowHistoryCount === 1 ? "workflow" : "workflows"
+          }`}
+          onClick={onOpenWorkflows}
+        >
+          <WorkflowIcon className="size-3" />
+          <span className="hidden sm:inline">Workflows</span>
+          <span className="font-mono text-[10px] tabular-nums text-muted-foreground/40">
+            {workflowHistoryCount}
+          </span>
+        </Button>
+      ) : null}
 
       <BranchToolbarBranchSelector
         className="min-w-0 flex-1 justify-end md:ml-auto md:flex-none"
