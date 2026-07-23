@@ -98,6 +98,7 @@ import {
   orderItemsByPreferredIds,
   resolveAdjacentThreadId,
   resolveSidebarV2Status,
+  resolveSidebarV2WorkingLabel,
   shouldNavigateAfterProjectRemoval,
   sortLogicalProjectsForSidebar,
   sortThreadsForSidebarV2,
@@ -129,7 +130,6 @@ import { SidebarContent, SidebarGroup, SidebarMenuButton, useSidebar } from "./u
 import { SidebarChromeFooter, SidebarChromeHeader } from "./sidebar/SidebarChrome";
 import { Tooltip, TooltipPopup, TooltipProvider, TooltipTrigger } from "./ui/tooltip";
 import { useComposerDraftStore } from "../composerDraftStore";
-import { formatWorkflowModelName } from "../claude-workflows";
 
 // Settled-tail paging: recent history is the common lookup; the deep tail
 // stays behind an explicit Show more.
@@ -298,11 +298,7 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
   const status = activeWorkflow && providerStatus === "ready" ? "working" : providerStatus;
   const shouldRecede = status === "ready" && !isUnread && !props.isActive && !isSelected;
   const isWaitingForModel = activeWorkflow?.state === "waitingForCodex";
-  const workingLabel = isWaitingForModel
-    ? `Waiting for ${formatWorkflowModelName(activeWorkflow.waitingForModel, "Codex")}`
-    : activeWorkflow?.state === "finalizing"
-      ? `Finalizing · ${activeWorkflow.finalizedCount}/${activeWorkflow.agentCount}`
-      : "Working";
+  const workingLabel = resolveSidebarV2WorkingLabel(activeWorkflow);
   // Status hues follow the system-wide convention set by sidebar v1 and the
   // mobile Live Activity/widgets (amber approval, indigo input, sky working)
   // so a thread reads the same color everywhere it surfaces.

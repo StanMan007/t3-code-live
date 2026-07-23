@@ -481,6 +481,25 @@ export function resolveSidebarV2Status(thread: SidebarV2StatusInput): SidebarV2S
   return "ready";
 }
 
+export function resolveSidebarV2WorkingLabel(
+  activeWorkflow:
+    | {
+        readonly state: "starting" | "waitingForCodex" | "finalizing";
+        readonly finalizedCount: number;
+        readonly agentCount: number;
+      }
+    | null
+    | undefined,
+): string {
+  if (activeWorkflow?.state === "waitingForCodex") {
+    return "Waiting for workflows";
+  }
+  if (activeWorkflow?.state === "finalizing") {
+    return `Finalizing · ${activeWorkflow.finalizedCount}/${activeWorkflow.agentCount}`;
+  }
+  return "Working";
+}
+
 /** NaN-safe Date.parse for sort comparators: a malformed timestamp must not
     poison the whole ordering, so it sinks to the epoch instead. */
 export function parseTimestampMs(isoDate: string): number {

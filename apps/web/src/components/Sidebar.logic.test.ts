@@ -19,6 +19,7 @@ import {
   resolveSidebarStageBadgeLabel,
   resolveThreadRowClassName,
   resolveSidebarV2Status,
+  resolveSidebarV2WorkingLabel,
   resolveThreadStatusPill,
   shouldNavigateAfterProjectRemoval,
   shouldClearThreadSelectionOnMouseDown,
@@ -754,6 +755,29 @@ describe("resolveSidebarV2Status", () => {
 
   it("defaults to ready with no session", () => {
     expect(resolveSidebarV2Status({ ...idle, session: null })).toBe("ready");
+  });
+});
+
+describe("resolveSidebarV2WorkingLabel", () => {
+  it("uses workflow-focused copy while a delegated agent is pending", () => {
+    expect(
+      resolveSidebarV2WorkingLabel({
+        state: "waitingForCodex",
+        finalizedCount: 1,
+        agentCount: 3,
+      }),
+    ).toBe("Waiting for workflows");
+  });
+
+  it("preserves the existing working and finalizing labels", () => {
+    expect(resolveSidebarV2WorkingLabel(undefined)).toBe("Working");
+    expect(
+      resolveSidebarV2WorkingLabel({
+        state: "finalizing",
+        finalizedCount: 2,
+        agentCount: 3,
+      }),
+    ).toBe("Finalizing · 2/3");
   });
 });
 
