@@ -7,7 +7,9 @@
  * @module ClaudeAdapterLive
  */
 import {
+  type AgentDefinition,
   type CanUseTool,
+  type HookCallback,
   query,
   type Options as ClaudeQueryOptions,
   type PermissionMode,
@@ -94,6 +96,101 @@ const encodeUnknownJsonStringExit = Schema.encodeUnknownExit(Schema.UnknownFromJ
 const decodeUnknownJsonStringExit = Schema.decodeUnknownExit(Schema.UnknownFromJsonString);
 
 const PROVIDER = ProviderDriverKind.make("claudeAgent");
+const CODEX_MCP_TOOL_NAME = "mcp__codex__codex";
+const CODEX_MCP_REPLY_TOOL_NAME = "mcp__codex__codex-reply";
+const CODEX_AGENT_ROUTING_REMINDER = `MANDATORY CODEX ROUTING CONTRACT:
+- You are a thin Claude wrapper. Never perform the substantive packet yourself.
+- Before reading files, searching, running commands, editing, or returning structured output, call ${CODEX_MCP_TOOL_NAME} exactly once.
+- Pass the complete packet verbatim as \`prompt\`.
+- Pin \`config: { "model": "gpt-5.6-sol", "model_reasoning_effort": "high" }\`.
+- Use the packet's absolute \`cwd\`, \`approval-policy: "never"\`, and \`read-only\` for research or \`workspace-write\` for implementation.
+- After the Codex call returns, immediately relay its result. Do not verify it with Claude tools.
+- If the MCP call cannot run, report that Codex was not invoked. Never substitute Claude's own work.`;
+const CODEX_AGENT_DEFINITION = {
+  description:
+    "Routes a self-contained work packet to GPT-5.6-Sol through the Codex MCP server. Use for any Workflow agent whose agentType is codex.",
+  tools: [CODEX_MCP_TOOL_NAME, CODEX_MCP_REPLY_TOOL_NAME],
+  model: "sonnet",
+  prompt: `You are a thin routing wrapper around GPT-5.6-Sol. You must not perform the substantive task yourself.
+
+For every packet you receive:
+1. Invoke ${CODEX_MCP_TOOL_NAME} exactly once before producing any answer.
+2. Pass the complete packet verbatim as \`prompt\`.
+3. Use the packet's explicit absolute working directory as \`cwd\`; otherwise use the current project working directory.
+4. Use \`read-only\` for analysis/research packets and \`workspace-write\` for implementation packets unless the packet explicitly requires another sandbox.
+5. Set \`approval-policy\` to \`never\`.
+6. Always pass \`config: { "model": "gpt-5.6-sol", "model_reasoning_effort": "high" }\`.
+7. Return the Codex result faithfully and immediately. Do not verify it with Read, Bash, Grep, Glob, or any other Claude tool. If the MCP call fails, report that Codex was not invoked; never replace it with your own analysis.
+
+${CODEX_MCP_REPLY_TOOL_NAME} may be used only to continue the thread returned by the first Codex call when the packet explicitly requires a correction or follow-up.`,
+  criticalSystemReminder_EXPERIMENTAL: CODEX_AGENT_ROUTING_REMINDER,
+} satisfies AgentDefinition;
+
+function makeCodexWorkflowHooks(): NonNullable<ClaudeQueryOptions["hooks"]> {
+  const codexAgentIds = new Set<string>();
+  const codexInvokedAgentIds = new Set<string>();
+
+  const onSubagentStart: HookCallback = async (input) => {
+    if (input.hook_event_name !== "SubagentStart" || input.agent_type !== "codex") return {};
+    codexAgentIds.add(input.agent_id);
+    return {
+      hookSpecificOutput: {
+        hookEventName: "SubagentStart",
+        additionalContext: CODEX_AGENT_ROUTING_REMINDER,
+      },
+    };
+  };
+
+  const onPreToolUse: HookCallback = async (input) => {
+    if (input.hook_event_name !== "PreToolUse" || input.agent_type !== "codex" || !input.agent_id) {
+      return {};
+    }
+    codexAgentIds.add(input.agent_id);
+    if (input.tool_name === CODEX_MCP_TOOL_NAME) {
+      codexInvokedAgentIds.add(input.agent_id);
+      return {};
+    }
+    if (
+      input.tool_name === CODEX_MCP_REPLY_TOOL_NAME ||
+      (input.tool_name === "StructuredOutput" && codexInvokedAgentIds.has(input.agent_id))
+    ) {
+      return {};
+    }
+    return {
+      hookSpecificOutput: {
+        hookEventName: "PreToolUse",
+        permissionDecision: "deny",
+        permissionDecisionReason: codexInvokedAgentIds.has(input.agent_id)
+          ? `The codex workflow agent already received the Codex result and must relay it directly instead of using ${input.tool_name}.`
+          : `The codex workflow agent must delegate through ${CODEX_MCP_TOOL_NAME} before using ${input.tool_name}.`,
+        additionalContext: CODEX_AGENT_ROUTING_REMINDER,
+      },
+    };
+  };
+
+  const onSubagentStop: HookCallback = async (input) => {
+    if (
+      input.hook_event_name !== "SubagentStop" ||
+      input.agent_type !== "codex" ||
+      !codexAgentIds.has(input.agent_id) ||
+      codexInvokedAgentIds.has(input.agent_id)
+    ) {
+      return {};
+    }
+    return {
+      hookSpecificOutput: {
+        hookEventName: "SubagentStop",
+        additionalContext: `Codex was not invoked. Continue this agent and satisfy the mandatory routing contract now.\n\n${CODEX_AGENT_ROUTING_REMINDER}`,
+      },
+    };
+  };
+
+  return {
+    SubagentStart: [{ hooks: [onSubagentStart] }],
+    PreToolUse: [{ hooks: [onPreToolUse] }],
+    SubagentStop: [{ hooks: [onSubagentStop] }],
+  };
+}
 type ClaudeTextStreamKind = Extract<RuntimeContentStreamKind, "assistant_text" | "reasoning_text">;
 type ClaudeToolResultStreamKind = Extract<
   RuntimeContentStreamKind,
@@ -185,6 +282,12 @@ interface ClaudeWorkflowDelegatedModelAttribution {
   readonly reasoningEffort?: string;
 }
 
+interface ClaudeWorkflowTranscriptEvidence {
+  readonly attribution?: ClaudeWorkflowDelegatedModelAttribution;
+  readonly successfulToolCalls: number;
+  readonly lastSuccessfulToolName?: string;
+}
+
 interface ClaudeSessionContext {
   session: ProviderSession;
   readonly promptQueue: Queue.Queue<PromptQueueItem>;
@@ -205,6 +308,7 @@ interface ClaudeSessionContext {
   readonly activeBackgroundTaskIds: Set<string>;
   readonly workflowTranscriptDirs: Map<string, string>;
   readonly workflowAgentAttributions: Map<string, ClaudeWorkflowDelegatedModelAttribution>;
+  readonly workflowAgentTranscriptEvidence: Map<string, ClaudeWorkflowTranscriptEvidence>;
   readonly workflowAgentFinalScans: Set<string>;
   turnState: ClaudeTurnState | undefined;
   lastKnownContextWindow: number | undefined;
@@ -716,13 +820,21 @@ function readString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
 }
 
-export function extractCodexMcpAttributionFromClaudeTranscript(
+function extractClaudeWorkflowTranscriptEvidence(
   transcript: string,
-): ClaudeWorkflowDelegatedModelAttribution | undefined {
-  const lines = transcript.split(/\r?\n/);
-  for (let lineIndex = lines.length - 1; lineIndex >= 0; lineIndex -= 1) {
-    const line = lines[lineIndex]?.trim();
-    if (!line || !line.includes('"mcp__codex__codex"')) continue;
+): ClaudeWorkflowTranscriptEvidence {
+  const toolUses = new Map<
+    string,
+    { readonly name: string; readonly input?: Record<string, unknown> }
+  >();
+  const successfulTools: Array<{
+    readonly name: string;
+    readonly input?: Record<string, unknown>;
+  }> = [];
+
+  for (const rawLine of transcript.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line) continue;
 
     let entry: unknown;
     try {
@@ -740,31 +852,60 @@ export function extractCodexMcpAttributionFromClaudeTranscript(
         ? (root.message as Record<string, unknown>)
         : undefined;
     const content = Array.isArray(message?.content) ? message.content : [];
-    for (let blockIndex = content.length - 1; blockIndex >= 0; blockIndex -= 1) {
-      const value = content[blockIndex];
+    for (const value of content) {
       if (value === null || typeof value !== "object" || Array.isArray(value)) continue;
       const block = value as Record<string, unknown>;
-      if (block.type !== "tool_use" || block.name !== "mcp__codex__codex") continue;
-      const input =
-        block.input !== null && typeof block.input === "object" && !Array.isArray(block.input)
-          ? (block.input as Record<string, unknown>)
-          : undefined;
-      const config =
-        input?.config !== null && typeof input?.config === "object" && !Array.isArray(input.config)
-          ? (input.config as Record<string, unknown>)
-          : undefined;
-      const model = readString(config?.model);
-      const reasoningEffort =
-        readString(config?.model_reasoning_effort) ?? readString(config?.modelReasoningEffort);
-      return {
-        provider: "openai",
-        toolName: "mcp__codex__codex",
-        ...(model ? { model } : {}),
-        ...(reasoningEffort ? { reasoningEffort } : {}),
-      };
+      if (block.type === "tool_use") {
+        const id = readString(block.id);
+        const name = readString(block.name);
+        if (!id || !name) continue;
+        const input =
+          block.input !== null && typeof block.input === "object" && !Array.isArray(block.input)
+            ? (block.input as Record<string, unknown>)
+            : undefined;
+        toolUses.set(id, { name, ...(input ? { input } : {}) });
+        continue;
+      }
+      if (block.type !== "tool_result" || block.is_error === true) continue;
+      const toolUseId = readString(block.tool_use_id);
+      const toolUse = toolUseId ? toolUses.get(toolUseId) : undefined;
+      if (toolUse) successfulTools.push(toolUse);
     }
   }
-  return undefined;
+
+  const successfulCodexCall = successfulTools.findLast(
+    (toolUse) => toolUse.name === CODEX_MCP_TOOL_NAME,
+  );
+  const config =
+    successfulCodexCall?.input?.config !== null &&
+    typeof successfulCodexCall?.input?.config === "object" &&
+    !Array.isArray(successfulCodexCall.input.config)
+      ? (successfulCodexCall.input.config as Record<string, unknown>)
+      : undefined;
+  const model = readString(config?.model);
+  const reasoningEffort =
+    readString(config?.model_reasoning_effort) ?? readString(config?.modelReasoningEffort);
+  const attribution: ClaudeWorkflowDelegatedModelAttribution | undefined = successfulCodexCall
+    ? {
+        provider: "openai" as const,
+        toolName: CODEX_MCP_TOOL_NAME,
+        ...(model ? { model } : {}),
+        ...(reasoningEffort ? { reasoningEffort } : {}),
+      }
+    : undefined;
+
+  const lastSuccessfulToolName = successfulTools.at(-1)?.name;
+  return {
+    ...(attribution ? { attribution } : {}),
+    successfulToolCalls: successfulTools.length,
+    ...(lastSuccessfulToolName ? { lastSuccessfulToolName } : {}),
+  };
+}
+
+export function extractCodexMcpAttributionFromClaudeTranscript(
+  transcript: string,
+): ClaudeWorkflowDelegatedModelAttribution | undefined {
+  return extractClaudeWorkflowTranscriptEvidence(transcript).attribution;
 }
 
 function readStringArray(value: unknown): Array<string> {
@@ -1459,29 +1600,51 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         }
 
         let attribution = context.workflowAgentAttributions.get(agentId);
+        let transcriptEvidence = context.workflowAgentTranscriptEvidence.get(agentId);
         const lastToolName = readString(entry.lastToolName);
         const state = readString(entry.state);
         const terminal =
           state === "done" || state === "completed" || state === "error" || state === "failed";
         const shouldInspect =
-          !attribution &&
-          (lastToolName === "mcp__codex__codex" ||
-            (terminal && !context.workflowAgentFinalScans.has(agentId)));
+          (!attribution && lastToolName === CODEX_MCP_TOOL_NAME) ||
+          (terminal && !context.workflowAgentFinalScans.has(agentId));
 
         if (shouldInspect) {
           if (terminal) context.workflowAgentFinalScans.add(agentId);
           const transcriptPath = path.join(transcriptDir, `agent-${agentId}.jsonl`);
-          attribution = yield* fileSystem.readFileString(transcriptPath).pipe(
-            Effect.map(extractCodexMcpAttributionFromClaudeTranscript),
+          transcriptEvidence = yield* fileSystem.readFileString(transcriptPath).pipe(
+            Effect.map(extractClaudeWorkflowTranscriptEvidence),
             Effect.orElseSucceed(() => undefined),
           );
+          attribution = transcriptEvidence?.attribution;
+          if (transcriptEvidence) {
+            context.workflowAgentTranscriptEvidence.set(agentId, transcriptEvidence);
+          }
           if (attribution) context.workflowAgentAttributions.set(agentId, attribution);
         }
 
+        const {
+          lastToolName: _lastToolName,
+          lastToolSummary: _lastToolSummary,
+          ...baseEntry
+        } = entry;
+        const trustworthyToolTelemetry =
+          terminal && transcriptEvidence
+            ? {
+                toolCalls: transcriptEvidence.successfulToolCalls,
+                ...(transcriptEvidence.lastSuccessfulToolName
+                  ? { lastToolName: transcriptEvidence.lastSuccessfulToolName }
+                  : {}),
+              }
+            : {
+                ...(lastToolName ? { lastToolName } : {}),
+                ...(_lastToolSummary !== undefined ? { lastToolSummary: _lastToolSummary } : {}),
+              };
         enriched.push(
           attribution
             ? {
-                ...entry,
+                ...baseEntry,
+                ...trustworthyToolTelemetry,
                 delegatedProvider: attribution.provider,
                 delegatedVia: attribution.toolName,
                 ...(attribution.model ? { delegatedModel: attribution.model } : {}),
@@ -1489,7 +1652,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
                   ? { delegatedReasoningEffort: attribution.reasoningEffort }
                   : {}),
               }
-            : entry,
+            : terminal && transcriptEvidence
+              ? { ...baseEntry, ...trustworthyToolTelemetry }
+              : entry,
         );
       }
       return enriched;
@@ -3775,6 +3940,10 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         pathToClaudeCodeExecutable: claudeBinaryPath,
         systemPrompt: { type: "preset", preset: "claude_code" },
         settingSources: [...CLAUDE_SETTING_SOURCES],
+        agents: {
+          codex: CODEX_AGENT_DEFINITION,
+        },
+        hooks: makeCodexWorkflowHooks(),
         // `ultracode` is a Claude Code setting, not an API effort level. It is
         // normalized to `xhigh` above and paired with `settings.ultracode`.
         ...(effectiveEffort
@@ -3886,6 +4055,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         activeBackgroundTaskIds: new Set(),
         workflowTranscriptDirs: new Map(),
         workflowAgentAttributions: new Map(),
+        workflowAgentTranscriptEvidence: new Map(),
         workflowAgentFinalScans: new Set(),
         turnState: undefined,
         lastKnownContextWindow: initialContextWindow,

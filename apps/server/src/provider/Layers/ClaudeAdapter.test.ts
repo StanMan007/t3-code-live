@@ -286,6 +286,7 @@ describe("ClaudeAdapterLive", () => {
           content: [
             {
               type: "tool_use",
+              id: "tool-codex-1",
               name: "mcp__codex__codex",
               input: {
                 prompt: "Review the change",
@@ -294,6 +295,17 @@ describe("ClaudeAdapterLive", () => {
                   model_reasoning_effort: "high",
                 },
               },
+            },
+          ],
+        },
+      }),
+      JSON.stringify({
+        message: {
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "tool-codex-1",
+              content: '{"threadId":"thread-1","content":"done"}',
             },
           ],
         },
@@ -310,6 +322,37 @@ describe("ClaudeAdapterLive", () => {
     assert.equal(
       extractCodexMcpAttributionFromClaudeTranscript(
         JSON.stringify({ message: { content: [{ type: "text", text: "gpt-5.6-sol" }] } }),
+      ),
+      undefined,
+    );
+    assert.equal(
+      extractCodexMcpAttributionFromClaudeTranscript(
+        [
+          JSON.stringify({
+            message: {
+              content: [
+                {
+                  type: "tool_use",
+                  id: "tool-codex-error",
+                  name: "mcp__codex__codex",
+                  input: { config: { model: "gpt-5.6-sol" } },
+                },
+              ],
+            },
+          }),
+          JSON.stringify({
+            message: {
+              content: [
+                {
+                  type: "tool_result",
+                  tool_use_id: "tool-codex-error",
+                  is_error: true,
+                  content: "MCP unavailable",
+                },
+              ],
+            },
+          }),
+        ].join("\n"),
       ),
       undefined,
     );
@@ -330,6 +373,125 @@ describe("ClaudeAdapterLive", () => {
       const prompt = yield* Effect.promise(() => readFirstPromptMessage(createInput));
       assert.deepEqual(prompt?.origin, { kind: "human" });
       assert.equal(createInput?.options.agentProgressSummaries, true);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("programmatically enforces the Codex MCP wrapper for workflow agents", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      const codexAgent = harness.getLastCreateQueryInput()?.options.agents?.codex;
+      assert.deepEqual(codexAgent?.tools, ["mcp__codex__codex", "mcp__codex__codex-reply"]);
+      assert.equal(codexAgent?.model, "sonnet");
+      assert.match(codexAgent?.prompt ?? "", /Invoke mcp__codex__codex exactly once/u);
+      assert.match(codexAgent?.prompt ?? "", /"model": "gpt-5\.6-sol"/u);
+      assert.match(codexAgent?.prompt ?? "", /"model_reasoning_effort": "high"/u);
+      assert.match(
+        codexAgent?.criticalSystemReminder_EXPERIMENTAL ?? "",
+        /Never perform the substantive packet yourself/u,
+      );
+
+      const subagentStartHook =
+        harness.getLastCreateQueryInput()?.options.hooks?.SubagentStart?.[0]?.hooks[0];
+      const preToolUseHook =
+        harness.getLastCreateQueryInput()?.options.hooks?.PreToolUse?.[0]?.hooks[0];
+      assert.equal(typeof subagentStartHook, "function");
+      assert.equal(typeof preToolUseHook, "function");
+      if (!subagentStartHook || !preToolUseHook) return;
+
+      const hookSignal = new AbortController().signal;
+      const startResult = yield* Effect.promise(() =>
+        subagentStartHook(
+          {
+            hook_event_name: "SubagentStart",
+            session_id: "session-1",
+            transcript_path: "/tmp/project/transcript.jsonl",
+            cwd: "/tmp/project",
+            agent_id: "agent-codex-1",
+            agent_type: "codex",
+          },
+          undefined,
+          { signal: hookSignal },
+        ),
+      );
+      assert.match(
+        (startResult as { hookSpecificOutput?: { additionalContext?: string } }).hookSpecificOutput
+          ?.additionalContext ?? "",
+        /call mcp__codex__codex exactly once/u,
+      );
+
+      const blockedRead = yield* Effect.promise(() =>
+        preToolUseHook(
+          {
+            hook_event_name: "PreToolUse",
+            session_id: "session-1",
+            transcript_path: "/tmp/project/transcript.jsonl",
+            cwd: "/tmp/project",
+            agent_id: "agent-codex-1",
+            agent_type: "codex",
+            tool_name: "Read",
+            tool_input: { file_path: "/tmp/project/package.json" },
+            tool_use_id: "tool-read-1",
+          },
+          "tool-read-1",
+          { signal: hookSignal },
+        ),
+      );
+      assert.equal(
+        (
+          blockedRead as {
+            hookSpecificOutput?: { permissionDecision?: string };
+          }
+        ).hookSpecificOutput?.permissionDecision,
+        "deny",
+      );
+
+      const allowedCodex = yield* Effect.promise(() =>
+        preToolUseHook(
+          {
+            hook_event_name: "PreToolUse",
+            session_id: "session-1",
+            transcript_path: "/tmp/project/transcript.jsonl",
+            cwd: "/tmp/project",
+            agent_id: "agent-codex-1",
+            agent_type: "codex",
+            tool_name: "mcp__codex__codex",
+            tool_input: {},
+            tool_use_id: "tool-codex-1",
+          },
+          "tool-codex-1",
+          { signal: hookSignal },
+        ),
+      );
+      assert.deepEqual(allowedCodex, {});
+
+      const allowedStructuredOutput = yield* Effect.promise(() =>
+        preToolUseHook(
+          {
+            hook_event_name: "PreToolUse",
+            session_id: "session-1",
+            transcript_path: "/tmp/project/transcript.jsonl",
+            cwd: "/tmp/project",
+            agent_id: "agent-codex-1",
+            agent_type: "codex",
+            tool_name: "StructuredOutput",
+            tool_input: {},
+            tool_use_id: "tool-output-1",
+          },
+          "tool-output-1",
+          { signal: hookSignal },
+        ),
+      );
+      assert.deepEqual(allowedStructuredOutput, {});
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
@@ -1940,23 +2102,61 @@ describe("ClaudeAdapterLive", () => {
       );
       NodeFS.writeFileSync(
         NodePath.join(transcriptDir, "agent-agent-codex.jsonl"),
-        `${encodeUnknownJsonString({
-          message: {
-            model: "claude-sonnet-5",
-            content: [
-              {
-                type: "tool_use",
-                name: "mcp__codex__codex",
-                input: {
-                  config: {
-                    model: "gpt-5.6-sol",
-                    model_reasoning_effort: "high",
+        [
+          encodeUnknownJsonString({
+            message: {
+              model: "claude-sonnet-5",
+              content: [
+                {
+                  type: "tool_use",
+                  id: "tool-codex-1",
+                  name: "mcp__codex__codex",
+                  input: {
+                    config: {
+                      model: "gpt-5.6-sol",
+                      model_reasoning_effort: "high",
+                    },
                   },
                 },
-              },
-            ],
-          },
-        })}\n`,
+              ],
+            },
+          }),
+          encodeUnknownJsonString({
+            message: {
+              content: [
+                {
+                  type: "tool_result",
+                  tool_use_id: "tool-codex-1",
+                  content: '{"threadId":"thread-1","content":"done"}',
+                },
+              ],
+            },
+          }),
+          encodeUnknownJsonString({
+            message: {
+              content: [
+                {
+                  type: "tool_use",
+                  id: "tool-read-denied",
+                  name: "Read",
+                  input: { file_path: "/tmp/project/package.json" },
+                },
+              ],
+            },
+          }),
+          encodeUnknownJsonString({
+            message: {
+              content: [
+                {
+                  type: "tool_result",
+                  tool_use_id: "tool-read-denied",
+                  is_error: true,
+                  content: "Denied by the Codex routing hook.",
+                },
+              ],
+            },
+          }),
+        ].join("\n"),
       );
 
       const adapter = yield* ClaudeAdapter;
@@ -2021,8 +2221,10 @@ describe("ClaudeAdapterLive", () => {
             label: "review:codex",
             phaseTitle: "Review",
             model: "claude-sonnet-5",
-            state: "progress",
-            lastToolName: "mcp__codex__codex",
+            state: "done",
+            lastToolName: "Read",
+            lastToolSummary: "/tmp/project/package.json",
+            toolCalls: 2,
           },
         ],
         session_id: "sdk-session-workflow-attribution",
@@ -2039,8 +2241,9 @@ describe("ClaudeAdapterLive", () => {
             label: "review:codex",
             phaseTitle: "Review",
             model: "claude-sonnet-5",
-            state: "progress",
+            state: "done",
             lastToolName: "mcp__codex__codex",
+            toolCalls: 1,
             delegatedProvider: "openai",
             delegatedVia: "mcp__codex__codex",
             delegatedModel: "gpt-5.6-sol",
