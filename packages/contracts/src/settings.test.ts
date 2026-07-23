@@ -33,6 +33,21 @@ describe("ClientSettings word wrap", () => {
   });
 });
 
+describe("ClientSettings changed files in threads", () => {
+  it("defaults inline changed-files review off", () => {
+    expect(decodeClientSettings({}).showChangedFilesInThread).toBe(false);
+  });
+
+  it("allows inline changed-files review to be enabled explicitly", () => {
+    expect(decodeClientSettings({ showChangedFilesInThread: true }).showChangedFilesInThread).toBe(
+      true,
+    );
+    expect(decodeClientSettingsPatch({ showChangedFilesInThread: true })).toEqual({
+      showChangedFilesInThread: true,
+    });
+  });
+});
+
 describe("ClientSettings glass opacity", () => {
   it("defaults to a readable translucent surface", () => {
     expect(decodeClientSettings({}).glassOpacity).toBe(80);

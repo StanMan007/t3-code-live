@@ -415,6 +415,9 @@ export function useSettingsRestore(onRestored?: () => void) {
       ...(settings.diffIgnoreWhitespace !== DEFAULT_UNIFIED_SETTINGS.diffIgnoreWhitespace
         ? ["Diff whitespace changes"]
         : []),
+      ...(settings.showChangedFilesInThread !== DEFAULT_UNIFIED_SETTINGS.showChangedFilesInThread
+        ? ["Changed files in threads"]
+        : []),
       ...(settings.autoOpenPlanSidebar !== DEFAULT_UNIFIED_SETTINGS.autoOpenPlanSidebar
         ? ["Auto-open task panel"]
         : []),
@@ -456,6 +459,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.defaultThreadEnvMode,
       settings.newWorktreesStartFromOrigin,
       settings.diffIgnoreWhitespace,
+      settings.showChangedFilesInThread,
       settings.glassOpacity,
       settings.automaticGitFetchInterval,
       settings.enableAssistantStreaming,
@@ -483,6 +487,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       timestampFormat: DEFAULT_UNIFIED_SETTINGS.timestampFormat,
       wordWrap: DEFAULT_UNIFIED_SETTINGS.wordWrap,
       diffIgnoreWhitespace: DEFAULT_UNIFIED_SETTINGS.diffIgnoreWhitespace,
+      showChangedFilesInThread: DEFAULT_UNIFIED_SETTINGS.showChangedFilesInThread,
       glassOpacity: DEFAULT_UNIFIED_SETTINGS.glassOpacity,
       sidebarThreadPreviewCount: DEFAULT_UNIFIED_SETTINGS.sidebarThreadPreviewCount,
       sidebarProjectGroupingMode: DEFAULT_UNIFIED_SETTINGS.sidebarProjectGroupingMode,
@@ -758,6 +763,33 @@ export function GeneralSettingsPanel() {
                 updateSettings({ diffIgnoreWhitespace: Boolean(checked) })
               }
               aria-label="Hide whitespace changes by default"
+            />
+          }
+        />
+
+        <SettingsRow
+          title="Changed files in threads"
+          description="Show a changed-files review card after a completed agent response."
+          resetAction={
+            settings.showChangedFilesInThread !==
+            DEFAULT_UNIFIED_SETTINGS.showChangedFilesInThread ? (
+              <SettingResetButton
+                label="changed files in threads"
+                onClick={() =>
+                  updateSettings({
+                    showChangedFilesInThread: DEFAULT_UNIFIED_SETTINGS.showChangedFilesInThread,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Switch
+              checked={settings.showChangedFilesInThread}
+              onCheckedChange={(checked) =>
+                updateSettings({ showChangedFilesInThread: Boolean(checked) })
+              }
+              aria-label="Show changed files in threads"
             />
           }
         />

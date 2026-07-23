@@ -377,7 +377,7 @@ describe("deriveMessagesTimelineRows", () => {
     expect(assistantRows[1]?.assistantCopyStreaming).toBe(true);
   });
 
-  it("projects assistant diff summaries and user revert counts onto the affected rows", () => {
+  it("projects user revert counts and appends the settled final diff as the last row", () => {
     const assistantTurnDiffSummary = {
       turnId: "turn-1" as never,
       completedAt: "2026-01-01T00:00:30Z",
@@ -419,7 +419,16 @@ describe("deriveMessagesTimelineRows", () => {
           },
         },
       ],
+      latestTurn: {
+        turnId: "turn-1" as never,
+        state: "completed",
+        startedAt: "2026-01-01T00:00:01Z",
+        completedAt: "2026-01-01T00:00:30Z",
+      },
       isWorking: false,
+      showChangedFiles: true,
+      activeTurnInProgress: false,
+      workflowInProgress: false,
       activeTurnStartedAt: null,
       turnDiffSummaryByAssistantMessageId: new Map([
         ["assistant-1" as never, assistantTurnDiffSummary],
@@ -431,13 +440,194 @@ describe("deriveMessagesTimelineRows", () => {
       (row): row is Extract<(typeof rows)[number], { kind: "message" }> =>
         row.kind === "message" && row.message.role === "user",
     );
-    const assistantRow = rows.find(
-      (row): row is Extract<(typeof rows)[number], { kind: "message" }> =>
-        row.kind === "message" && row.message.role === "assistant",
-    );
 
     expect(userRow?.revertTurnCount).toBe(1);
-    expect(assistantRow?.assistantTurnDiffSummary).toBe(assistantTurnDiffSummary);
+    expect(rows.at(-1)).toMatchObject({
+      kind: "changed-files",
+      turnSummary: assistantTurnDiffSummary,
+    });
+    expect(rows.filter((row) => row.kind === "changed-files")).toHaveLength(1);
+  });
+
+  it.each([
+    {
+      label: "the provider is working",
+      overrides: { isWorking: true },
+    },
+    {
+      label: "the active turn has not settled",
+      overrides: { activeTurnInProgress: true },
+    },
+    {
+      label: "the session still reports a running turn",
+      overrides: { runningTurnId: "turn-1" as never },
+    },
+    {
+      label: "a workflow is pending",
+      overrides: { workflowInProgress: true },
+    },
+  ])("withholds the changed-files row while $label", ({ overrides }) => {
+    const assistantMessageId = "assistant-1" as never;
+    const turnDiffSummary = {
+      turnId: "turn-1" as never,
+      completedAt: "2026-01-01T00:00:30Z",
+      assistantMessageId,
+      checkpointTurnCount: 1,
+      checkpointRef: "checkpoint-1" as never,
+      status: "ready" as const,
+      files: [{ path: "src/index.ts", kind: "modified", additions: 3, deletions: 1 }],
+    };
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [
+        {
+          id: "assistant-entry",
+          kind: "message",
+          createdAt: "2026-01-01T00:00:20Z",
+          message: {
+            id: assistantMessageId,
+            role: "assistant",
+            text: "Interim or final response",
+            turnId: "turn-1" as never,
+            createdAt: "2026-01-01T00:00:20Z",
+            updatedAt: "2026-01-01T00:00:30Z",
+            streaming: false,
+          },
+        },
+      ],
+      latestTurn: {
+        turnId: "turn-1" as never,
+        state: "completed",
+        startedAt: "2026-01-01T00:00:01Z",
+        completedAt: "2026-01-01T00:00:30Z",
+      },
+      isWorking: false,
+      showChangedFiles: true,
+      activeTurnInProgress: false,
+      workflowInProgress: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaryByAssistantMessageId: new Map([[assistantMessageId, turnDiffSummary]]),
+      revertTurnCountByUserMessageId: new Map(),
+      ...overrides,
+    });
+
+    expect(rows.some((row) => row.kind === "changed-files")).toBe(false);
+  });
+
+  it("does not create a changed-files row when inline review is disabled", () => {
+    const assistantMessageId = "assistant-1" as never;
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [
+        {
+          id: "assistant-entry",
+          kind: "message",
+          createdAt: "2026-01-01T00:00:20Z",
+          message: {
+            id: assistantMessageId,
+            role: "assistant",
+            text: "Done",
+            turnId: "turn-1" as never,
+            createdAt: "2026-01-01T00:00:20Z",
+            updatedAt: "2026-01-01T00:00:30Z",
+            streaming: false,
+          },
+        },
+      ],
+      latestTurn: {
+        turnId: "turn-1" as never,
+        state: "completed",
+        startedAt: "2026-01-01T00:00:01Z",
+        completedAt: "2026-01-01T00:00:30Z",
+      },
+      isWorking: false,
+      showChangedFiles: false,
+      activeTurnInProgress: false,
+      workflowInProgress: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaryByAssistantMessageId: new Map([
+        [
+          assistantMessageId,
+          {
+            turnId: "turn-1" as never,
+            completedAt: "2026-01-01T00:00:30Z",
+            assistantMessageId,
+            checkpointTurnCount: 1,
+            checkpointRef: "checkpoint-1" as never,
+            status: "ready" as const,
+            files: [{ path: "src/index.ts", kind: "modified", additions: 3, deletions: 1 }],
+          },
+        ],
+      ]),
+      revertTurnCountByUserMessageId: new Map(),
+    });
+
+    expect(rows.some((row) => row.kind === "changed-files")).toBe(false);
+    expect(rows.at(-1)).toMatchObject({
+      kind: "message",
+      message: { role: "assistant", text: "Done" },
+    });
+  });
+
+  it("does not surface an earlier diff after a later final assistant message", () => {
+    const earlierAssistantId = "assistant-earlier" as never;
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [
+        {
+          id: "assistant-earlier-entry",
+          kind: "message",
+          createdAt: "2026-01-01T00:00:10Z",
+          message: {
+            id: earlierAssistantId,
+            role: "assistant",
+            text: "Earlier response",
+            turnId: "turn-1" as never,
+            createdAt: "2026-01-01T00:00:10Z",
+            updatedAt: "2026-01-01T00:00:11Z",
+            streaming: false,
+          },
+        },
+        {
+          id: "assistant-final-entry",
+          kind: "message",
+          createdAt: "2026-01-01T00:00:20Z",
+          message: {
+            id: "assistant-final" as never,
+            role: "assistant",
+            text: "Very final response",
+            turnId: "turn-2" as never,
+            createdAt: "2026-01-01T00:00:20Z",
+            updatedAt: "2026-01-01T00:00:21Z",
+            streaming: false,
+          },
+        },
+      ],
+      latestTurn: {
+        turnId: "turn-2" as never,
+        state: "completed",
+        startedAt: "2026-01-01T00:00:19Z",
+        completedAt: "2026-01-01T00:00:21Z",
+      },
+      isWorking: false,
+      activeTurnInProgress: false,
+      workflowInProgress: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaryByAssistantMessageId: new Map([
+        [
+          earlierAssistantId,
+          {
+            turnId: "turn-1" as never,
+            completedAt: "2026-01-01T00:00:11Z",
+            assistantMessageId: earlierAssistantId,
+            checkpointTurnCount: 1,
+            checkpointRef: "checkpoint-1" as never,
+            status: "ready" as const,
+            files: [{ path: "src/index.ts", kind: "modified", additions: 3, deletions: 1 }],
+          },
+        ],
+      ]),
+      revertTurnCountByUserMessageId: new Map(),
+    });
+
+    expect(rows.some((row) => row.kind === "changed-files")).toBe(false);
   });
 
   it("folds settled-turn commentary and work behind a Worked-for row", () => {

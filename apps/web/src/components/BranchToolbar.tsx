@@ -56,6 +56,7 @@ interface BranchToolbarProps {
   onEnvironmentChange?: (environmentId: EnvironmentId) => void;
   workflowHistoryCount?: number;
   onOpenWorkflows?: () => void;
+  embedded?: boolean;
 }
 
 interface MobileRunContextSelectorProps {
@@ -213,6 +214,7 @@ export const BranchToolbar = memo(function BranchToolbar({
   onEnvironmentChange,
   workflowHistoryCount = 0,
   onOpenWorkflows,
+  embedded = false,
 }: BranchToolbarProps) {
   const threadRef = useMemo(
     () => scopeThreadRef(environmentId, threadId),
@@ -251,6 +253,72 @@ export const BranchToolbar = memo(function BranchToolbar({
   const isMobile = useIsMobile();
 
   if (!hasActiveThread || !activeProject) return null;
+
+  if (embedded) {
+    return (
+      <div className="grid gap-1" data-chat-composer-run-context-controls="true">
+        <div className="px-2 pt-1 font-medium text-muted-foreground text-xs">Run context</div>
+        {showEnvironmentIndicator && availableEnvironments ? (
+          <div className="flex min-w-0 items-center justify-between gap-3 rounded-md px-2 py-1">
+            <span className="text-muted-foreground text-xs">Environment</span>
+            <BranchToolbarEnvironmentSelector
+              envLocked={envLocked}
+              environmentId={environmentId}
+              availableEnvironments={availableEnvironments}
+              {...(showEnvironmentPicker && onEnvironmentChange ? { onEnvironmentChange } : {})}
+            />
+          </div>
+        ) : null}
+        <div className="flex min-w-0 items-center justify-between gap-3 rounded-md px-2 py-1">
+          <span className="text-muted-foreground text-xs">Workspace</span>
+          <BranchToolbarEnvModeSelector
+            envLocked={envModeLocked}
+            effectiveEnvMode={effectiveEnvMode}
+            activeWorktreePath={activeWorktreePath}
+            onEnvModeChange={onEnvModeChange}
+          />
+        </div>
+        <div className="flex min-w-0 items-center justify-between gap-3 rounded-md px-2 py-1">
+          <span className="text-muted-foreground text-xs">Branch</span>
+          <BranchToolbarBranchSelector
+            className="min-w-0 justify-end"
+            environmentId={environmentId}
+            threadId={threadId}
+            {...(draftId ? { draftId } : {})}
+            envLocked={envLocked}
+            {...(effectiveEnvModeOverride ? { effectiveEnvModeOverride } : {})}
+            {...(activeThreadBranchOverride !== undefined ? { activeThreadBranchOverride } : {})}
+            {...(onActiveThreadBranchOverrideChange ? { onActiveThreadBranchOverrideChange } : {})}
+            startFromOrigin={startFromOrigin}
+            onStartFromOriginChange={onStartFromOriginChange}
+            {...(onCheckoutPullRequestRequest ? { onCheckoutPullRequestRequest } : {})}
+            {...(onComposerFocusRequest ? { onComposerFocusRequest } : {})}
+          />
+        </div>
+        {workflowHistoryCount > 0 && onOpenWorkflows ? (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            data-workflow-history-trigger="true"
+            className="w-full justify-between px-2 font-normal"
+            aria-label={`Open ${workflowHistoryCount} saved ${
+              workflowHistoryCount === 1 ? "workflow" : "workflows"
+            }`}
+            onClick={onOpenWorkflows}
+          >
+            <span className="inline-flex items-center gap-2">
+              <WorkflowIcon className="size-3.5 text-muted-foreground" />
+              Workflows
+            </span>
+            <span className="font-mono text-[10px] tabular-nums text-muted-foreground/60">
+              {workflowHistoryCount}
+            </span>
+          </Button>
+        ) : null}
+      </div>
+    );
+  }
 
   return (
     <div className="chat-composer-context-strip -mt-4 mx-auto flex w-[calc(100%-1.5rem)] max-w-[calc(48rem-1.5rem)] items-center gap-2 pt-5 pb-1 ps-1">

@@ -1171,6 +1171,7 @@ function ChatViewContent(props: ChatViewProps) {
   );
   const timestampFormat = settings.timestampFormat;
   const autoOpenPlanSidebar = settings.autoOpenPlanSidebar;
+  const showChangedFilesInThread = settings.showChangedFilesInThread;
   const navigate = useNavigate();
   const { resolvedTheme } = useTheme();
   // Granular store selectors — avoid subscribing to prompt changes.
@@ -1790,6 +1791,16 @@ function ChatViewContent(props: ChatViewProps) {
   const claudeWorkflowRuns = useMemo(
     () => deriveClaudeWorkflowRuns(activeThread?.activities ?? []),
     [activeThread?.activities],
+  );
+  const claudeWorkflowInProgress = useMemo(
+    () =>
+      claudeWorkflowRuns.some(
+        (workflow) =>
+          workflow.status === "pending" ||
+          workflow.status === "running" ||
+          workflow.status === "paused",
+      ),
+    [claudeWorkflowRuns],
   );
   const openClaudeWorkflowNavigator = useCallback(() => {
     if (lockedProvider !== "claudeAgent" || claudeWorkflowRuns.length === 0) {
@@ -5485,6 +5496,35 @@ function ChatViewContent(props: ChatViewProps) {
     ) : null
   ) : null;
 
+  const renderBranchToolbar = (embedded: boolean) =>
+    isGitRepo ? (
+      <BranchToolbar
+        environmentId={activeThread.environmentId}
+        threadId={activeThread.id}
+        {...(routeKind === "draft" && draftId ? { draftId } : {})}
+        onEnvModeChange={onEnvModeChange}
+        startFromOrigin={startFromOrigin}
+        onStartFromOriginChange={onStartFromOriginChange}
+        {...(canOverrideServerThreadEnvMode ? { effectiveEnvModeOverride: envMode } : {})}
+        {...(canOverrideServerThreadEnvMode
+          ? {
+              activeThreadBranchOverride: activeThreadBranch,
+              onActiveThreadBranchOverrideChange: setPendingServerThreadBranch,
+            }
+          : {})}
+        envLocked={envLocked}
+        onComposerFocusRequest={scheduleComposerFocus}
+        {...(canCheckoutPullRequestIntoThread
+          ? { onCheckoutPullRequestRequest: openPullRequestDialog }
+          : {})}
+        {...(hasMultipleEnvironments ? { onEnvironmentChange } : {})}
+        availableEnvironments={logicalProjectEnvironments}
+        workflowHistoryCount={lockedProvider === "claudeAgent" ? claudeWorkflowRuns.length : 0}
+        onOpenWorkflows={openClaudeWorkflowNavigator}
+        embedded={embedded}
+      />
+    ) : null;
+
   return (
     <div className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden bg-background">
       {rightPanelOpen && !shouldUsePlanSidebarSheet ? panelLayoutControls : null}
@@ -5566,6 +5606,8 @@ function ChatViewContent(props: ChatViewProps) {
                     ? activeThread.session.activeTurnId
                     : null
                 }
+                workflowInProgress={claudeWorkflowInProgress}
+                showChangedFiles={showChangedFilesInThread}
                 turnDiffSummaryByAssistantMessageId={turnDiffSummaryByAssistantMessageId}
                 activeThreadEnvironmentId={activeThread.environmentId}
                 routeThreadKey={routeThreadKey}
@@ -5740,6 +5782,9 @@ function ChatViewContent(props: ChatViewProps) {
                           handleRuntimeModeChange={handleRuntimeModeChange}
                           handleInteractionModeChange={handleInteractionModeChange}
                           onOpenWorkflows={openClaudeWorkflowNavigator}
+                          {...(!isDraftHeroState
+                            ? { runContextControls: renderBranchToolbar(true) }
+                            : {})}
                           togglePlanSidebar={togglePlanSidebar}
                           focusComposer={focusComposer}
                           scheduleComposerFocus={scheduleComposerFocus}
@@ -5753,39 +5798,9 @@ function ChatViewContent(props: ChatViewProps) {
                         data-terminal-open={terminalUiState.terminalOpen ? "true" : undefined}
                         className="relative z-0"
                       >
-                        {isGitRepo && (
-                          <div className="pointer-events-auto">
-                            <BranchToolbar
-                              environmentId={activeThread.environmentId}
-                              threadId={activeThread.id}
-                              {...(routeKind === "draft" && draftId ? { draftId } : {})}
-                              onEnvModeChange={onEnvModeChange}
-                              startFromOrigin={startFromOrigin}
-                              onStartFromOriginChange={onStartFromOriginChange}
-                              {...(canOverrideServerThreadEnvMode
-                                ? { effectiveEnvModeOverride: envMode }
-                                : {})}
-                              {...(canOverrideServerThreadEnvMode
-                                ? {
-                                    activeThreadBranchOverride: activeThreadBranch,
-                                    onActiveThreadBranchOverrideChange:
-                                      setPendingServerThreadBranch,
-                                  }
-                                : {})}
-                              envLocked={envLocked}
-                              onComposerFocusRequest={scheduleComposerFocus}
-                              {...(canCheckoutPullRequestIntoThread
-                                ? { onCheckoutPullRequestRequest: openPullRequestDialog }
-                                : {})}
-                              {...(hasMultipleEnvironments ? { onEnvironmentChange } : {})}
-                              availableEnvironments={logicalProjectEnvironments}
-                              workflowHistoryCount={
-                                lockedProvider === "claudeAgent" ? claudeWorkflowRuns.length : 0
-                              }
-                              onOpenWorkflows={openClaudeWorkflowNavigator}
-                            />
-                          </div>
-                        )}
+                        {isDraftHeroState && isGitRepo ? (
+                          <div className="pointer-events-auto">{renderBranchToolbar(false)}</div>
+                        ) : null}
                       </div>
                     </div>
                     <div

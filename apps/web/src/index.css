@@ -1115,12 +1115,16 @@ label:has(> select#reasoning-effort) select {
 }
 
 .chat-markdown :not(pre) > code {
-  border: 1px solid var(--border);
+  border: none;
   border-radius: 0.375rem;
   background: var(--muted);
   padding: 0.1rem 0.35rem;
   color: var(--foreground);
   font-size: 0.75rem;
+}
+
+.dark .chat-markdown :not(pre) > code {
+  background: color-mix(in srgb, var(--muted) 95%, var(--foreground));
 }
 
 .chat-markdown a.chat-markdown-file-link {

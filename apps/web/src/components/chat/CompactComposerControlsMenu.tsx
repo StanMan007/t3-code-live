@@ -1,91 +1,85 @@
-import { ProviderInteractionMode, RuntimeMode } from "@t3tools/contracts";
+import { ProviderInteractionMode } from "@t3tools/contracts";
 import { memo, type ReactNode } from "react";
-import { EllipsisIcon, ListTodoIcon } from "lucide-react";
+import { BotIcon, ListTodoIcon, PencilRulerIcon, PlusIcon } from "lucide-react";
 import { Button } from "../ui/button";
-import {
-  Menu,
-  MenuItem,
-  MenuPopup,
-  MenuRadioGroup,
-  MenuRadioItem,
-  MenuSeparator as MenuDivider,
-  MenuTrigger,
-} from "../ui/menu";
+import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
 
 export const CompactComposerControlsMenu = memo(function CompactComposerControlsMenu(props: {
   activePlan: boolean;
   interactionMode: ProviderInteractionMode;
   planSidebarLabel: string;
   planSidebarOpen: boolean;
-  runtimeMode: RuntimeMode;
+  runContextControls?: ReactNode;
   showInteractionModeToggle: boolean;
-  traitsMenuContent?: ReactNode;
+  traitsPicker?: ReactNode;
   onToggleInteractionMode: () => void;
   onTogglePlanSidebar: () => void;
-  onRuntimeModeChange: (mode: RuntimeMode) => void;
 }) {
   return (
-    <Menu>
-      <MenuTrigger
+    <Popover>
+      <PopoverTrigger
         render={
           <Button
-            size="sm"
+            size="icon-sm"
             variant="ghost"
-            className="shrink-0 px-2 text-muted-foreground/70 hover:text-foreground/80"
-            aria-label="More composer controls"
+            className="shrink-0 rounded-full text-muted-foreground/80 hover:text-foreground"
+            aria-label="Add context or change composer options"
+            data-chat-composer-plus-trigger="true"
           />
         }
       >
-        <EllipsisIcon aria-hidden="true" className="size-4" />
-      </MenuTrigger>
-      <MenuPopup align="start">
-        {props.traitsMenuContent ? (
-          <>
-            {props.traitsMenuContent}
-            <MenuDivider />
-          </>
+        <PlusIcon aria-hidden="true" className="size-4" />
+      </PopoverTrigger>
+      <PopoverPopup align="start" side="top" className="w-72" viewportClassName="grid gap-2 p-2">
+        {props.runContextControls}
+
+        {props.runContextControls && (props.traitsPicker || props.showInteractionModeToggle) ? (
+          <div className="mx-1 h-px bg-border/60" />
         ) : null}
+
+        {props.traitsPicker ? (
+          <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-md px-2 py-1">
+            <span className="text-muted-foreground text-xs">Model options</span>
+            {props.traitsPicker}
+          </div>
+        ) : null}
+
         {props.showInteractionModeToggle ? (
-          <>
-            <div className="px-2 py-1.5 font-medium text-muted-foreground text-xs">Mode</div>
-            <MenuRadioGroup
-              value={props.interactionMode}
-              onValueChange={(value) => {
-                if (!value || value === props.interactionMode) return;
-                props.onToggleInteractionMode();
-              }}
-            >
-              <MenuRadioItem value="default">Chat</MenuRadioItem>
-              <MenuRadioItem value="plan">Plan</MenuRadioItem>
-            </MenuRadioGroup>
-            <MenuDivider />
-          </>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="w-full justify-between px-2 font-normal"
+            onClick={props.onToggleInteractionMode}
+            aria-label={`Switch to ${props.interactionMode === "plan" ? "Build" : "Plan"} mode`}
+          >
+            <span className="text-muted-foreground text-xs">Mode</span>
+            <span className="inline-flex items-center gap-1.5 text-foreground">
+              {props.interactionMode === "plan" ? (
+                <PencilRulerIcon className="size-3.5 text-blue-400" />
+              ) : (
+                <BotIcon className="size-3.5 text-muted-foreground" />
+              )}
+              {props.interactionMode === "plan" ? "Plan" : "Build"}
+            </span>
+          </Button>
         ) : null}
-        <div className="px-2 py-1.5 font-medium text-muted-foreground text-xs">Access</div>
-        <MenuRadioGroup
-          value={props.runtimeMode}
-          onValueChange={(value) => {
-            if (!value || value === props.runtimeMode) return;
-            props.onRuntimeModeChange(value as RuntimeMode);
-          }}
-        >
-          <MenuRadioItem value="approval-required">Supervised</MenuRadioItem>
-          <MenuRadioItem value="auto-accept-edits">Auto-accept edits</MenuRadioItem>
-          <MenuRadioItem value="auto">Auto</MenuRadioItem>
-          <MenuRadioItem value="full-access">Full access</MenuRadioItem>
-        </MenuRadioGroup>
+
         {props.activePlan ? (
-          <>
-            <MenuDivider />
-            <MenuItem onClick={props.onTogglePlanSidebar}>
-              <ListTodoIcon className="size-4 shrink-0" />
-              {props.planSidebarOpen
-                ? `Hide ${props.planSidebarLabel.toLowerCase()} sidebar`
-                : `Show ${props.planSidebarLabel.toLowerCase()} sidebar`}
-            </MenuItem>
-          </>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="w-full justify-start gap-2 px-2 font-normal"
+            onClick={props.onTogglePlanSidebar}
+          >
+            <ListTodoIcon className="size-4 shrink-0" />
+            {props.planSidebarOpen
+              ? `Hide ${props.planSidebarLabel.toLowerCase()} sidebar`
+              : `Show ${props.planSidebarLabel.toLowerCase()} sidebar`}
+          </Button>
         ) : null}
-      </MenuPopup>
-    </Menu>
+      </PopoverPopup>
+    </Popover>
   );
 });

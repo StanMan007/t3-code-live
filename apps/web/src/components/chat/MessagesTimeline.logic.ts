@@ -166,7 +166,6 @@ export type MessagesTimelineRow =
       showAssistantMeta: boolean;
       showAssistantCopyButton: boolean;
       assistantCopyStreaming: boolean;
-      assistantTurnDiffSummary?: TurnDiffSummary | undefined;
       revertTurnCount?: number | undefined;
     }
   | {
@@ -174,6 +173,12 @@ export type MessagesTimelineRow =
       id: string;
       createdAt: string;
       proposedPlan: ProposedPlan;
+    }
+  | {
+      kind: "changed-files";
+      id: string;
+      createdAt: string;
+      turnSummary: TurnDiffSummary;
     }
   | { kind: "working"; id: string; createdAt: string | null };
 
@@ -409,6 +414,9 @@ export function deriveMessagesTimelineRows(input: {
   expandedTurnIds?: ReadonlySet<TurnId>;
   expandedWorkGroupIds?: ReadonlySet<string>;
   isWorking: boolean;
+  showChangedFiles?: boolean;
+  activeTurnInProgress?: boolean;
+  workflowInProgress?: boolean;
   activeTurnStartedAt: string | null;
   turnDiffSummaryByAssistantMessageId: ReadonlyMap<MessageId, TurnDiffSummary>;
   revertTurnCountByUserMessageId: ReadonlyMap<MessageId, number>;
@@ -552,10 +560,6 @@ export function deriveMessagesTimelineRows(input: {
       showAssistantMeta,
       showAssistantCopyButton: showAssistantMeta,
       assistantCopyStreaming: timelineEntry.message.streaming || assistantTurnStillInProgress,
-      assistantTurnDiffSummary:
-        timelineEntry.message.role === "assistant"
-          ? input.turnDiffSummaryByAssistantMessageId.get(timelineEntry.message.id)
-          : undefined,
       revertTurnCount:
         timelineEntry.message.role === "user"
           ? input.revertTurnCountByUserMessageId.get(timelineEntry.message.id)
@@ -569,6 +573,35 @@ export function deriveMessagesTimelineRows(input: {
       id: "working-indicator-row",
       createdAt: input.activeTurnStartedAt,
     });
+  }
+
+  // Inline changed-files review is opt-in so the default timeline stays a clean
+  // user/assistant conversation. When enabled, keep the summary absent while
+  // either the provider or a workflow can still add output, then append it last.
+  if (
+    input.showChangedFiles === true &&
+    !input.isWorking &&
+    !input.activeTurnInProgress &&
+    !input.workflowInProgress &&
+    unsettledTurnId === null
+  ) {
+    const finalAssistantEntry = input.timelineEntries.findLast(
+      (entry): entry is Extract<TimelineEntry, { kind: "message" }> =>
+        entry.kind === "message" && entry.message.role === "assistant",
+    );
+    const turnSummary =
+      finalAssistantEntry && !finalAssistantEntry.message.streaming
+        ? input.turnDiffSummaryByAssistantMessageId.get(finalAssistantEntry.message.id)
+        : undefined;
+
+    if (turnSummary?.files.length) {
+      nextRows.push({
+        kind: "changed-files",
+        id: `changed-files:${turnSummary.turnId}`,
+        createdAt: turnSummary.completedAt,
+        turnSummary,
+      });
+    }
   }
 
   return nextRows;
@@ -610,6 +643,11 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
     case "proposed-plan":
       return a.proposedPlan === (b as typeof a).proposedPlan;
 
+    case "changed-files": {
+      const bc = b as typeof a;
+      return a.createdAt === bc.createdAt && a.turnSummary === bc.turnSummary;
+    }
+
     case "work":
       return Equal.equals(a.groupedEntries, (b as typeof a).groupedEntries);
 
@@ -632,7 +670,6 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
         a.showAssistantMeta === bm.showAssistantMeta &&
         a.showAssistantCopyButton === bm.showAssistantCopyButton &&
         a.assistantCopyStreaming === bm.assistantCopyStreaming &&
-        a.assistantTurnDiffSummary === bm.assistantTurnDiffSummary &&
         a.revertTurnCount === bm.revertTurnCount
       );
     }

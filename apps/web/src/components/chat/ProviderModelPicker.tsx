@@ -33,6 +33,9 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
   keybindings?: ResolvedKeybindingsConfig;
   modelOptionsByInstance: ReadonlyMap<ProviderInstanceId, ReadonlyArray<ModelEsque>>;
   activeProviderIconClassName?: string;
+  secondaryLabel?: string | null;
+  showProviderIcon?: boolean;
+  popupAlign?: "start" | "center" | "end";
   compact?: boolean;
   disabled?: boolean;
   terminalOpen?: boolean;
@@ -151,7 +154,7 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
             data-chat-provider-model-picker="true"
             className={cn(
               "min-w-0 justify-between whitespace-nowrap px-2 text-muted-foreground/70 hover:text-foreground/80",
-              props.compact ? "max-w-42 shrink-0" : "max-w-48 shrink sm:max-w-56 sm:px-3",
+              props.compact ? "max-w-56 shrink-0" : "max-w-48 shrink sm:max-w-56 sm:px-3",
               props.triggerClassName,
             )}
             disabled={props.disabled}
@@ -159,7 +162,7 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
         }
       >
         <span className="flex min-w-0 flex-1 items-center gap-2">
-          {activeEntry ? (
+          {activeEntry && props.showProviderIcon !== false ? (
             <ProviderInstanceIcon
               driverKind={activeEntry.driverKind}
               displayName={activeEntry.displayName}
@@ -174,19 +177,29 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
               )}
             />
           ) : null}
-          <Tooltip>
-            <TooltipTrigger render={<span className="min-w-0 flex-1 overflow-hidden truncate" />}>
-              {triggerTitle}
-            </TooltipTrigger>
-            <TooltipPopup side="top">{triggerLabel}</TooltipPopup>
-          </Tooltip>
+          <span className="flex min-w-0 flex-1 items-baseline gap-1 overflow-hidden">
+            <Tooltip>
+              <TooltipTrigger render={<span className="min-w-0 overflow-hidden truncate" />}>
+                {triggerTitle}
+              </TooltipTrigger>
+              <TooltipPopup side="top">{triggerLabel}</TooltipPopup>
+            </Tooltip>
+            {props.secondaryLabel ? (
+              <span
+                className="shrink-0 text-muted-foreground/65"
+                data-chat-provider-reasoning-label="true"
+              >
+                {props.secondaryLabel}
+              </span>
+            ) : null}
+          </span>
         </span>
         <span aria-hidden="true" className="flex items-center">
           <ChevronDownIcon aria-hidden="true" className="!ms-0 !-me-1 size-3 shrink-0 opacity-60" />
         </span>
       </PopoverTrigger>
       <PopoverPopup
-        align="start"
+        align={props.popupAlign ?? "start"}
         className="border-0 bg-transparent p-0 shadow-none before:hidden [--viewport-inline-padding:0]"
         viewportClassName="!overflow-hidden p-0"
       >

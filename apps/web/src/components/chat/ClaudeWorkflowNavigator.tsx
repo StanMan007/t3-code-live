@@ -664,23 +664,21 @@ function WorkflowDockRow(props: {
     <button
       type="button"
       data-claude-workflow-dock-row="true"
-      className="group grid min-h-12 w-full grid-cols-[auto_auto_minmax(0,1fr)_auto] items-center gap-x-3 border-t border-white/[0.055] px-3.5 py-2.5 text-left first:border-t-0 transition-colors hover:bg-white/[0.035]"
+      className="group grid h-8 w-full grid-cols-[auto_auto_minmax(0,1fr)_auto] items-center gap-x-2.5 border-t border-white/[0.055] px-3 text-left first:border-t-0 transition-colors hover:bg-white/[0.035]"
       onClick={props.onOpen}
       aria-expanded={props.expanded}
       aria-label={`Open workflow ${props.run.name}`}
     >
       <StatusMark status={props.run.status} />
       <GitBranchIcon className="size-3.5 shrink-0 text-violet-300/70" />
-      <span className="min-w-0">
-        <span className="block truncate font-mono text-[11px] text-foreground/85">
-          {props.run.name}
-        </span>
-        <span className="mt-0.5 flex min-w-0 items-center gap-1.5 font-mono text-[9px]">
+      <span className="flex min-w-0 items-center gap-2 overflow-hidden">
+        <span className="truncate font-mono text-[10px] text-foreground/85">{props.run.name}</span>
+        <span className="flex shrink-0 items-center gap-1.5 font-mono text-[9px]">
           <span className="shrink-0 text-muted-foreground/45">{parentModel}</span>
           <span className="text-muted-foreground/25">·</span>
           <span
             className={cn(
-              "truncate",
+              "shrink-0",
               status.tone === "waiting"
                 ? "text-violet-200/75"
                 : status.tone === "paused"
@@ -698,7 +696,7 @@ function WorkflowDockRow(props: {
           </span>
         </span>
       </span>
-      <span className="flex shrink-0 items-center gap-3">
+      <span className="flex shrink-0 items-center gap-2.5">
         <span className="hidden font-mono text-[9px] text-muted-foreground/40 md:inline">
           {workflowProgressLabel(props.run.agents)}
         </span>
@@ -793,6 +791,7 @@ function useWorkflowDelegationToasts(workflows: ReadonlyArray<ClaudeWorkflowRun>
 function WorkflowPanel(props: {
   workflows: ReadonlyArray<ClaudeWorkflowRun>;
   run: ClaudeWorkflowRun;
+  visible: boolean;
   branchLabel: string;
   parentModel?: string | null;
   selectedPhase: ClaudeWorkflowPhase | null;
@@ -808,7 +807,13 @@ function WorkflowPanel(props: {
   return (
     <div
       data-claude-workflow-panel="true"
-      className="absolute bottom-full left-1/2 z-30 mb-2 flex h-[min(62vh,520px)] min-h-80 w-[min(96vw,1040px)] -translate-x-1/2 animate-in flex-col overflow-hidden rounded-xl border border-white/[0.09] bg-[#151515]/98 text-foreground shadow-2xl shadow-black/45 backdrop-blur-xl fade-in slide-in-from-bottom-2 duration-150"
+      className={cn(
+        "absolute bottom-full left-1/2 z-30 mb-2 flex h-[min(62vh,520px)] min-h-80 w-[min(96vw,1040px)] -translate-x-1/2 flex-col overflow-hidden rounded-xl bg-[#151515]/98 text-foreground shadow-2xl shadow-black/45 backdrop-blur-xl",
+        "origin-bottom transition-[opacity,transform] duration-200 ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none",
+        props.visible
+          ? "translate-y-0 scale-100 opacity-100"
+          : "pointer-events-none translate-y-2 scale-[0.985] opacity-0",
+      )}
     >
       <header className="flex items-center gap-2.5 border-b border-white/[0.07] px-3 py-1.5">
         <GitBranchIcon className="size-3.5 shrink-0 text-violet-300/80" />
@@ -1000,6 +1005,8 @@ export const ClaudeWorkflowNavigator = memo(function ClaudeWorkflowNavigator(pro
   );
   const navigatorRef = useRef<HTMLDivElement>(null);
   const [expanded, setExpanded] = useState(false);
+  const [panelMounted, setPanelMounted] = useState(false);
+  const [panelVisible, setPanelVisible] = useState(false);
   const [runIndex, setRunIndex] = useState(0);
   const [selectedPhaseTitle, setSelectedPhaseTitle] = useState<string | null>(null);
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
@@ -1043,6 +1050,24 @@ export const ClaudeWorkflowNavigator = memo(function ClaudeWorkflowNavigator(pro
   useEffect(() => onClaudeWorkflowNavigatorOpen(openActiveWorkflow), [openActiveWorkflow]);
 
   useEffect(() => {
+    let frame: number | undefined;
+    let timer: number | undefined;
+
+    if (expanded) {
+      setPanelMounted(true);
+      frame = window.requestAnimationFrame(() => setPanelVisible(true));
+    } else {
+      setPanelVisible(false);
+      timer = window.setTimeout(() => setPanelMounted(false), 200);
+    }
+
+    return () => {
+      if (frame !== undefined) window.cancelAnimationFrame(frame);
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [expanded]);
+
+  useEffect(() => {
     if (!expanded) return;
 
     const handleOutsidePointerDown = (event: PointerEvent) => {
@@ -1056,18 +1081,19 @@ export const ClaudeWorkflowNavigator = memo(function ClaudeWorkflowNavigator(pro
     return () => document.removeEventListener("pointerdown", handleOutsidePointerDown, true);
   }, [expanded]);
 
-  if (!run || (!expanded && activeWorkflows.length === 0)) return null;
+  if (!run || (!expanded && !panelMounted && activeWorkflows.length === 0)) return null;
   const dockWorkflows = activeWorkflows.length > 0 ? activeWorkflows : [run];
 
   return (
     <div
       ref={navigatorRef}
-      className="pointer-events-auto relative z-0 mx-auto -mb-2 w-full max-w-3xl px-3"
+      className="pointer-events-auto relative z-0 mx-auto w-full max-w-3xl px-4 after:pointer-events-none after:absolute after:inset-x-4 after:top-full after:h-3 after:bg-[#1a1a1a]/96 after:content-['']"
     >
-      {expanded ? (
+      {panelMounted ? (
         <WorkflowPanel
           workflows={workflows}
           run={run}
+          visible={panelVisible}
           branchLabel={props.branch?.trim() || "current checkout"}
           {...(props.parentModel !== undefined ? { parentModel: props.parentModel } : {})}
           selectedPhase={selectedPhase}
@@ -1088,7 +1114,7 @@ export const ClaudeWorkflowNavigator = memo(function ClaudeWorkflowNavigator(pro
 
       <div
         data-claude-workflow-navigator="true"
-        className="overflow-hidden rounded-t-xl rounded-b-lg border border-white/[0.07] bg-[#1a1a1a]/96 pb-2 shadow-lg shadow-black/20 backdrop-blur-md"
+        className="relative z-0 overflow-hidden rounded-t-xl bg-[#1a1a1a]/96 shadow-lg shadow-black/20 backdrop-blur-md"
       >
         {dockWorkflows.map((workflow) => (
           <WorkflowDockRow

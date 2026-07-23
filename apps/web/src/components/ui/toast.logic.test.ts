@@ -4,7 +4,19 @@ import {
   buildVisibleToastLayout,
   shouldHideCollapsedToastContent,
   shouldRenderThreadScopedToast,
+  shouldRenderTopRightToast,
 } from "./toast.logic";
+
+describe("shouldRenderTopRightToast", () => {
+  it("keeps only error toasts in the global top-right viewport", () => {
+    assert.equal(shouldRenderTopRightToast("error"), true);
+    assert.equal(shouldRenderTopRightToast("warning"), false);
+    assert.equal(shouldRenderTopRightToast("info"), false);
+    assert.equal(shouldRenderTopRightToast("loading"), false);
+    assert.equal(shouldRenderTopRightToast("success"), false);
+    assert.equal(shouldRenderTopRightToast(undefined), false);
+  });
+});
 
 describe("shouldHideCollapsedToastContent", () => {
   it("keeps a single visible toast readable", () => {

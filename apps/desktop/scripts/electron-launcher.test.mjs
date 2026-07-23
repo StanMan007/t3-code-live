@@ -1,14 +1,14 @@
 import { assert, describe, it } from "vite-plus/test";
 
 import {
-  makeDevelopmentLauncherScript,
+  makeDevelopmentLauncherSource,
   resolveElectronBinaryPath,
   resolveMacLauncherPaths,
 } from "./electron-launcher.mjs";
 
 describe("electron development launcher", () => {
-  it("uses captured values only as fallbacks for a live runner environment", () => {
-    const script = makeDevelopmentLauncherScript({
+  it("uses captured values only as fallbacks in a native launcher", () => {
+    const source = makeDevelopmentLauncherSource({
       electronBinaryPath: "/repo/node_modules/electron/Electron",
       mainEntryPath: "/repo/apps/desktop/dist-electron/main.cjs",
       desktopRoot: "/repo/apps/desktop",
@@ -19,15 +19,17 @@ describe("electron development launcher", () => {
       },
     });
 
+    assert.include(source, 'set_fallback("VITE_DEV_SERVER_URL", "http://127.0.0.1:8526");');
+    assert.notInclude(source, "#!/bin/sh");
     assert.include(
-      script,
-      "if [ -z \"${VITE_DEV_SERVER_URL:-}\" ]; then export VITE_DEV_SERVER_URL='http://127.0.0.1:8526'; fi",
+      source,
+      'const char *desktop_root_arg = "--t3code-dev-root=/repo/apps/desktop";',
     );
-    assert.notInclude(script, "\nexport VITE_DEV_SERVER_URL=");
     assert.include(
-      script,
-      "exec '/repo/node_modules/electron/Electron' --t3code-dev-root='/repo/apps/desktop' '/repo/apps/desktop/dist-electron/main.cjs' \"$@\"",
+      source,
+      'const char *main_entry_path = "/repo/apps/desktop/dist-electron/main.cjs";',
     );
+    assert.include(source, "execv(electron_path, launch_argv);");
   });
 
   it("repairs Electron before loading the package entrypoint", () => {
@@ -66,16 +68,13 @@ describe("electron development launcher", () => {
       "/repo/apps/desktop/.electron-runtime/T3 Code (Dev).app/Contents/MacOS/Electron",
     );
 
-    const script = makeDevelopmentLauncherScript({
+    const source = makeDevelopmentLauncherSource({
       electronBinaryPath: paths.runtimeElectronBinaryPath,
       mainEntryPath: "/repo/apps/desktop/dist-electron/main.cjs",
       desktopRoot: "/repo/apps/desktop",
       environment: {},
     });
-    assert.include(
-      script,
-      "exec '/repo/apps/desktop/.electron-runtime/T3 Code (Dev).app/Contents/MacOS/Electron'",
-    );
-    assert.notInclude(script, "node_modules/electron");
+    assert.include(source, `const char *electron_path = "${paths.runtimeElectronBinaryPath}";`);
+    assert.notInclude(source, "#!/bin/sh");
   });
 });

@@ -1,5 +1,9 @@
 import type { ScopedThreadRef, ThreadId } from "@t3tools/contracts";
 
+export function shouldRenderTopRightToast(type: unknown): boolean {
+  return type === "error";
+}
+
 export function shouldHideCollapsedToastContent(
   visibleToastIndex: number,
   visibleToastCount: number,

@@ -415,23 +415,15 @@ export const TraitsPicker = memo(function TraitsPicker({
     return null;
   }
 
-  const triggerLabels: Array<string> = [];
-  for (const descriptor of descriptors) {
-    const label =
-      ultrathinkPromptControlled && descriptor.id === primarySelectDescriptor?.id
-        ? "Ultrathink"
-        : descriptor.type === "boolean"
-          ? descriptor.id === "fastMode"
-            ? descriptor.currentValue === true
-              ? "Fast"
-              : "Normal"
-            : `${descriptor.label} ${descriptor.currentValue === true ? "On" : "Off"}`
-          : getProviderOptionCurrentLabel(descriptor);
-    if (typeof label === "string" && label.length > 0) {
-      triggerLabels.push(label);
-    }
-  }
-  const triggerLabel = triggerLabels.join(" · ");
+  const primaryDescriptor = primarySelectDescriptor ?? descriptors[0] ?? null;
+  const triggerLabel =
+    ultrathinkPromptControlled && primaryDescriptor?.id === primarySelectDescriptor?.id
+      ? "Ultrathink"
+      : primaryDescriptor?.type === "boolean"
+        ? `${primaryDescriptor.label} ${primaryDescriptor.currentValue === true ? "On" : "Off"}`
+        : primaryDescriptor
+          ? (getProviderOptionCurrentLabel(primaryDescriptor) ?? primaryDescriptor.label)
+          : "Options";
 
   const isCodexStyle = provider === "codex";
 

@@ -5,7 +5,7 @@ import { describe, expect, it } from "vite-plus/test";
 import { ChangedFilesCard, ChangedFilesTree } from "./ChangedFilesTree";
 
 describe("ChangedFilesCard", () => {
-  it("keeps its compact header sticky while preserving singular labels", () => {
+  it("keeps its compact header flush, clipped, and sticky while preserving singular labels", () => {
     const markup = renderToStaticMarkup(
       <ChangedFilesCard
         turnId={TurnId.make("turn-1")}
@@ -18,7 +18,12 @@ describe("ChangedFilesCard", () => {
     );
 
     expect(markup).toContain('class="sticky top-0 z-10');
-    expect(markup).not.toContain("self-start");
+    expect(markup).toContain("overflow-clip rounded-2xl");
+    expect(markup).toContain("min-h-10");
+    expect(markup).toContain("border-b");
+    expect(markup).toContain('class="p-2 pt-1.5"');
+    expect(markup).not.toContain("before:-top-4");
+    expect(markup).not.toContain("mb-3");
     expect(markup).toContain("whitespace-nowrap");
     expect(markup).toContain("!size-[22px]");
     expect(markup).toContain("size-3");

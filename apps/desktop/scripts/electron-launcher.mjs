@@ -20,7 +20,7 @@ export const APP_BUNDLE_ID = isDevelopment
   ? `com.t3tools.t3code.dev.${devBundleIdSuffix || "local"}`
   : "com.t3tools.t3code";
 const APP_PROTOCOL_SCHEMES = isDevelopment ? ["t3code-dev"] : ["t3code"];
-const LAUNCHER_VERSION = 14;
+const LAUNCHER_VERSION = 15;
 const defaultIconPath = NodePath.join(desktopDir, "resources", "icon.icns");
 const developmentMacIconPngPath = NodePath.join(
   repoRoot,
@@ -96,11 +96,7 @@ function runChecked(command, args) {
   throw new Error(`Failed to run ${command} ${args.join(" ")}: ${details}`.trim());
 }
 
-function shellSingleQuote(value) {
-  return `'${value.replaceAll("'", "'\\''")}'`;
-}
-
-export function makeDevelopmentLauncherScript({
+export function makeDevelopmentLauncherSource({
   electronBinaryPath,
   mainEntryPath,
   desktopRoot,
@@ -116,27 +112,87 @@ export function makeDevelopmentLauncherScript({
     ["T3CODE_DESKTOP_APP_USER_MODEL_ID", APP_BUNDLE_ID],
   ].filter((entry) => typeof entry[1] === "string" && entry[1].trim().length > 0);
   return [
-    "#!/bin/sh",
+    "#include <errno.h>",
+    "#include <stdio.h>",
+    "#include <stdlib.h>",
+    "#include <string.h>",
+    "#include <unistd.h>",
+    "",
+    "static void set_fallback(const char *name, const char *value) {",
+    "  const char *current = getenv(name);",
+    "  if (current == NULL || current[0] == '\\0') {",
+    "    setenv(name, value, 0);",
+    "  }",
+    "}",
+    "",
+    "int main(int argc, char **argv) {",
     ...envEntries.map(
-      ([name, value]) =>
-        `if [ -z "\${${name}:-}" ]; then export ${name}=${shellSingleQuote(value)}; fi`,
+      ([name, value]) => `  set_fallback(${JSON.stringify(name)}, ${JSON.stringify(value)});`,
     ),
-    `exec ${shellSingleQuote(electronBinaryPath)} --t3code-dev-root=${shellSingleQuote(desktopRoot)} ${shellSingleQuote(mainEntryPath)} "$@"`,
+    `  const char *electron_path = ${JSON.stringify(electronBinaryPath)};`,
+    `  const char *desktop_root_arg = ${JSON.stringify(`--t3code-dev-root=${desktopRoot}`)};`,
+    `  const char *main_entry_path = ${JSON.stringify(mainEntryPath)};`,
+    "  char **launch_argv = calloc((size_t)argc + 3, sizeof(char *));",
+    "  if (launch_argv == NULL) {",
+    '    fprintf(stderr, "T3 Code Dev launcher failed to allocate arguments.\\n");',
+    "    return 1;",
+    "  }",
+    "  launch_argv[0] = (char *)electron_path;",
+    "  launch_argv[1] = (char *)desktop_root_arg;",
+    "  launch_argv[2] = (char *)main_entry_path;",
+    "  for (int index = 1; index < argc; index += 1) {",
+    "    launch_argv[index + 2] = argv[index];",
+    "  }",
+    "  launch_argv[argc + 2] = NULL;",
+    "  execv(electron_path, launch_argv);",
+    '  fprintf(stderr, "T3 Code Dev launcher failed to start Electron: %s\\n", strerror(errno));',
+    "  free(launch_argv);",
+    "  return 1;",
+    "}",
     "",
   ].join("\n");
 }
 
-function writeDevelopmentLauncherScript(targetBinaryPath, electronBinaryPath) {
-  NodeFS.writeFileSync(
-    targetBinaryPath,
-    makeDevelopmentLauncherScript({
-      electronBinaryPath,
-      mainEntryPath: NodePath.join(desktopDir, "dist-electron", "main.cjs"),
-      desktopRoot: desktopDir,
-      environment: process.env,
-    }),
+function writeDevelopmentLauncherExecutable(targetBinaryPath, electronBinaryPath, runtimeDir) {
+  const source = makeDevelopmentLauncherSource({
+    electronBinaryPath,
+    mainEntryPath: NodePath.join(desktopDir, "dist-electron", "main.cjs"),
+    desktopRoot: desktopDir,
+    environment: process.env,
+  });
+  const sourcePath = NodePath.join(runtimeDir, "development-launcher.c");
+  if (
+    NodeFS.existsSync(targetBinaryPath) &&
+    NodeFS.existsSync(sourcePath) &&
+    NodeFS.readFileSync(sourcePath, "utf8") === source
+  ) {
+    return false;
+  }
+
+  NodeFS.writeFileSync(sourcePath, source);
+  const result = NodeChildProcess.spawnSync(
+    "cc",
+    ["-x", "c", "-std=c11", "-O2", "-o", targetBinaryPath, sourcePath],
+    { encoding: "utf8" },
   );
+  if (result.status !== 0) {
+    const details = [result.stdout, result.stderr].filter(Boolean).join("\n");
+    throw new Error(`Failed to compile the T3 Code Dev launcher: ${details}`.trim());
+  }
   NodeFS.chmodSync(targetBinaryPath, 0o755);
+  return true;
+}
+
+function macBundleSignatureIsValid(appBundlePath) {
+  return (
+    NodeChildProcess.spawnSync("codesign", ["--verify", "--deep", "--strict", appBundlePath], {
+      stdio: "ignore",
+    }).status === 0
+  );
+}
+
+function signDevelopmentMacBundle(appBundlePath) {
+  runChecked("codesign", ["--force", "--deep", "--sign", "-", appBundlePath]);
 }
 
 function registerMacLauncherBundle(appBundlePath) {
@@ -227,6 +283,13 @@ function patchMainBundleInfoPlist(appBundlePath, iconPath, executableName) {
   setPlistString(infoPlistPath, "CFBundleIdentifier", APP_BUNDLE_ID);
   setPlistString(infoPlistPath, "CFBundleExecutable", executableName);
   setPlistString(infoPlistPath, "CFBundleIconFile", "icon.icns");
+  if (isDevelopment) {
+    setPlistString(
+      infoPlistPath,
+      "NSDocumentsFolderUsageDescription",
+      "T3 Code Dev needs access to local projects in your Documents folder.",
+    );
+  }
   setPlistJson(infoPlistPath, "CFBundleURLTypes", [
     {
       CFBundleURLName: APP_BUNDLE_ID,
@@ -319,10 +382,17 @@ function buildMacLauncher(electronBinaryPath) {
     JSON.stringify(currentMetadata) === JSON.stringify(expectedMetadata)
   ) {
     if (isDevelopment) {
-      // The launcher also handles protocol activations outside the dev runner,
-      // so refresh its fallback environment on every launch. Never let a value
-      // captured by an older parent app override the live dev-runner environment.
-      writeDevelopmentLauncherScript(launcherBinaryPath, runtimeElectronBinaryPath);
+      // A native launcher keeps macOS privacy attribution on the T3 Code Dev
+      // bundle. A shell-script CFBundleExecutable is attributed to /bin/sh and
+      // gets EPERM when Finder reopens a checkout under Documents.
+      const launcherChanged = writeDevelopmentLauncherExecutable(
+        launcherBinaryPath,
+        runtimeElectronBinaryPath,
+        runtimeDir,
+      );
+      if (launcherChanged || !macBundleSignatureIsValid(targetAppBundlePath)) {
+        signDevelopmentMacBundle(targetAppBundlePath);
+      }
     }
     registerMacLauncherBundle(targetAppBundlePath);
     return launcherBinaryPath;
@@ -349,9 +419,12 @@ function buildMacLauncher(electronBinaryPath) {
     // Electron.app even though this bundle's Info.plist has the T3 Code name.
     // Its conventional executable name also keeps Electron's default-app runtime
     // in development mode instead of making app.isPackaged report true.
-    writeDevelopmentLauncherScript(launcherBinaryPath, runtimeElectronBinaryPath);
+    writeDevelopmentLauncherExecutable(launcherBinaryPath, runtimeElectronBinaryPath, runtimeDir);
   }
   NodeFS.writeFileSync(metadataPath, `${JSON.stringify(expectedMetadata, null, 2)}\n`);
+  if (isDevelopment) {
+    signDevelopmentMacBundle(targetAppBundlePath);
+  }
   registerMacLauncherBundle(targetAppBundlePath);
 
   return launcherBinaryPath;

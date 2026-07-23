@@ -7,6 +7,7 @@ import {
 } from "@t3tools/contracts";
 import {
   buildProviderOptionSelectionsFromDescriptors,
+  getProviderOptionCurrentLabel,
   getProviderOptionCurrentValue,
   getProviderOptionDescriptors,
   isClaudeUltrathinkPrompt,
@@ -30,6 +31,7 @@ export type ComposerPromptInjectionState = "none" | "ultrathink";
 export type ComposerProviderState = {
   provider: ProviderDriverKind;
   promptEffort: string | null;
+  promptEffortLabel: string | null;
   modelOptionsForDispatch: ReadonlyArray<ProviderOptionSelection> | undefined;
   composerFrameClassName?: string;
   composerSurfaceClassName?: string;
@@ -65,10 +67,16 @@ export function getComposerProviderState(input: ComposerProviderStateInput): Com
   const ultrathinkActive =
     (primarySelectDescriptor?.promptInjectedValues?.length ?? 0) > 0 &&
     promptInjectionState === "ultrathink";
+  const promptEffortLabel = ultrathinkActive
+    ? "Ultrathink"
+    : primarySelectDescriptor
+      ? (getProviderOptionCurrentLabel(primarySelectDescriptor) ?? null)
+      : null;
 
   return {
     provider,
     promptEffort,
+    promptEffortLabel,
     modelOptionsForDispatch: buildProviderOptionSelectionsFromDescriptors(descriptors),
     ...(ultrathinkActive
       ? {

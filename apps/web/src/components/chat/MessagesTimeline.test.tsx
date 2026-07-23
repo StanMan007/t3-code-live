@@ -178,6 +178,8 @@ function buildProps() {
     listRef: createRef<LegendListRef | null>(),
     latestTurn: null,
     runningTurnId: null,
+    workflowInProgress: false,
+    showChangedFiles: false,
     turnDiffSummaryByAssistantMessageId: new Map(),
     routeThreadKey: "environment-local:thread-1",
     onOpenTurnDiff: () => {},
@@ -239,12 +241,13 @@ describe("MessagesTimeline", () => {
     expect(fadedMarkup).toContain("chat-timeline-scroll-fade");
   });
 
-  it("keeps assistant changed-files headers sticky below the thread header", () => {
+  it("renders the final changed-files row at the bottom with its sticky header", () => {
     const assistantMessageId = MessageId.make("message-assistant-with-files");
     const turnId = TurnId.make("turn-with-files");
     const markup = renderToStaticMarkup(
       <MessagesTimeline
         {...buildProps()}
+        showChangedFiles
         timelineEntries={[
           {
             id: "entry-assistant-with-files",
@@ -281,13 +284,20 @@ describe("MessagesTimeline", () => {
     );
 
     expect(markup).toContain('class="sticky top-2 z-10');
-    expect(markup).not.toContain("self-start");
+    expect(markup).toContain("overflow-clip rounded-2xl");
+    expect(markup).toContain("min-h-10");
+    expect(markup).toContain("border-b");
+    expect(markup).toContain('class="p-2 pt-1.5"');
+    expect(markup).not.toContain("before:-top-4");
+    expect(markup).not.toContain("mb-3");
     expect(markup).toContain("whitespace-nowrap");
     expect(markup).toContain("!size-[22px]");
     expect(markup).toContain("size-3");
-    expect(markup).toContain('aria-label="Collapse all"');
+    expect(markup).toContain('aria-label="Expand all"');
     expect(markup).toContain('aria-label="View diff"');
     expect(markup).toContain("1 changed file");
+    expect(markup.indexOf("Updated the fixture.")).toBeLessThan(markup.indexOf("1 changed file"));
+    expect(markup).toContain('data-timeline-row-kind="changed-files"');
   });
 
   it("uses LegendList isNearEnd when deciding whether the live edge is visible", async () => {
