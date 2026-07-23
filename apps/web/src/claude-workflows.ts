@@ -43,6 +43,8 @@ export interface ClaudeWorkflowAgent {
   tokens: number;
   toolUses: number;
   durationMs: number;
+  startedAtMs?: number;
+  updatedAtMs?: number;
 }
 
 export interface ClaudeWorkflowPhase {
@@ -102,6 +104,18 @@ function readString(value: unknown): string | undefined {
 
 function readNumber(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : 0;
+}
+
+function readTimestampMs(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value) && value >= 0) return value;
+  if (typeof value !== "string") return undefined;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function observedDurationMs(startedAtMs: number | undefined, updatedAtMs: number | undefined) {
+  if (startedAtMs === undefined || updatedAtMs === undefined) return 0;
+  return Math.max(0, updatedAtMs - startedAtMs);
 }
 
 function readQuotedProperty(source: string, property: string): string | undefined {
@@ -215,9 +229,11 @@ function workflowAgentStatus(value: unknown): ClaudeWorkflowStatus {
 function usageFromPayload(payload: Record<string, unknown> | null) {
   const usage = asRecord(payload?.usage);
   return {
-    tokens: readNumber(usage?.total_tokens),
-    toolUses: readNumber(usage?.tool_uses),
-    durationMs: readNumber(usage?.duration_ms),
+    tokens: readNumber(usage?.total_tokens ?? usage?.totalTokens),
+    toolUses: readNumber(
+      usage?.tool_uses ?? usage?.toolUses ?? usage?.tool_calls ?? usage?.toolCalls,
+    ),
+    durationMs: readNumber(usage?.duration_ms ?? usage?.durationMs),
   };
 }
 
@@ -342,6 +358,22 @@ export function deriveClaudeWorkflowRuns(
     }
 
     const payload = asRecord(activity.payload);
+    if (activity.kind === "task.roster") {
+      const activeTaskIds = new Set(
+        (Array.isArray(payload?.tasks) ? payload.tasks : []).flatMap((task) => {
+          const record = asRecord(task);
+          const rosterTaskId = readString(record?.task_id) ?? readString(record?.taskId);
+          return rosterTaskId ? [rosterTaskId] : [];
+        }),
+      );
+      for (const existingRun of runs.values()) {
+        if (existingRun.status === "running" && !activeTaskIds.has(existingRun.taskId)) {
+          existingRun.status = "stopped";
+          existingRun.updatedAt = activity.createdAt;
+        }
+      }
+      continue;
+    }
     const taskId = readString(payload?.taskId);
     if (!taskId) continue;
     const taskType = readString(payload?.taskType);
@@ -372,6 +404,7 @@ export function deriveClaudeWorkflowRuns(
         const summary = readString(payload?.summary);
         if (summary) run.summary = summary;
       } else if (activity.kind === "task.progress") {
+        if (run.status === "paused") run.status = "running";
         const usage = usageFromPayload(payload);
         run.tokens = Math.max(run.tokens, usage.tokens);
         run.toolUses = Math.max(run.toolUses, usage.toolUses);
@@ -407,6 +440,13 @@ export function deriveClaudeWorkflowRuns(
           const toolSummary = readString(entry?.lastToolSummary);
           const summary = result ?? toolSummary ?? previous?.summary;
           const lastToolName = readString(entry?.lastToolName) ?? previous?.lastToolName;
+          const startedAtMs =
+            readTimestampMs(entry?.startedAt) ??
+            readTimestampMs(entry?.queuedAt) ??
+            previous?.startedAtMs ??
+            readTimestampMs(activity.createdAt);
+          const updatedAtMs =
+            readTimestampMs(entry?.lastProgressAt) ?? readTimestampMs(activity.createdAt);
           const agent: ClaudeWorkflowAgent = {
             id: agentId,
             title,
@@ -424,7 +464,13 @@ export function deriveClaudeWorkflowRuns(
             recentTools: appendRecentTool(previous?.recentTools, lastToolName),
             tokens: Math.max(previous?.tokens ?? 0, readNumber(entry?.tokens)),
             toolUses: Math.max(previous?.toolUses ?? 0, readNumber(entry?.toolCalls)),
-            durationMs: Math.max(previous?.durationMs ?? 0, readNumber(entry?.durationMs)),
+            durationMs: Math.max(
+              previous?.durationMs ?? 0,
+              readNumber(entry?.durationMs),
+              observedDurationMs(startedAtMs, updatedAtMs),
+            ),
+            ...(startedAtMs !== undefined ? { startedAtMs } : {}),
+            ...(updatedAtMs !== undefined ? { updatedAtMs } : {}),
           };
           pendingAgents.set(agentId, agent);
           const agentIndex = run.agents.findIndex((candidate) => candidate.id === agentId);
@@ -471,6 +517,8 @@ export function deriveClaudeWorkflowRuns(
       const summary = readString(payload?.summary) ?? previous?.summary;
       const lastToolName = readString(payload?.lastToolName) ?? previous?.lastToolName;
       const transcriptPath = readString(payload?.transcriptPath) ?? previous?.transcriptPath;
+      const activityTimestampMs = readTimestampMs(activity.createdAt);
+      const startedAtMs = previous?.startedAtMs ?? activityTimestampMs;
       const agent: ClaudeWorkflowAgent = {
         id: taskId,
         title,
@@ -498,7 +546,13 @@ export function deriveClaudeWorkflowRuns(
         ...(transcriptPath ? { transcriptPath } : {}),
         tokens: Math.max(previous?.tokens ?? 0, usage.tokens),
         toolUses: Math.max(previous?.toolUses ?? 0, usage.toolUses),
-        durationMs: Math.max(previous?.durationMs ?? 0, usage.durationMs),
+        durationMs: Math.max(
+          previous?.durationMs ?? 0,
+          usage.durationMs,
+          observedDurationMs(startedAtMs, activityTimestampMs),
+        ),
+        ...(startedAtMs !== undefined ? { startedAtMs } : {}),
+        ...(activityTimestampMs !== undefined ? { updatedAtMs: activityTimestampMs } : {}),
       };
       pendingAgents.set(taskId, agent);
       const existingIndex = targetRun.agents.findIndex((candidate) => candidate.id === taskId);
@@ -509,6 +563,21 @@ export function deriveClaudeWorkflowRuns(
   }
 
   for (const run of runs.values()) {
+    const runUpdatedAtMs = readTimestampMs(run.updatedAt);
+    const runStartedAtMs = readTimestampMs(run.startedAt);
+    if (run.status !== "running" && run.status !== "pending") {
+      for (const agent of run.agents) {
+        if (agent.status === "running" || agent.status === "pending") {
+          agent.status = run.status;
+          if (runUpdatedAtMs !== undefined) agent.updatedAtMs = runUpdatedAtMs;
+          agent.durationMs = Math.max(
+            agent.durationMs,
+            observedDurationMs(agent.startedAtMs, runUpdatedAtMs),
+          );
+        }
+      }
+      run.durationMs = Math.max(run.durationMs, observedDurationMs(runStartedAtMs, runUpdatedAtMs));
+    }
     const definition = definitions.get(run.id);
     const phaseDefinitions = definition?.phases ?? [];
     const phaseTitles = phaseDefinitions.map((phase) => phase.title);
@@ -519,15 +588,18 @@ export function deriveClaudeWorkflowRuns(
       const agents = run.agents.filter((agent) => agent.phase === title);
       const definitionPhase = phaseDefinitions.find((phase) => phase.title === title);
       const statuses = new Set(agents.map((agent) => agent.status));
-      const status: ClaudeWorkflowStatus = statuses.has("running")
-        ? "running"
-        : statuses.has("paused")
-          ? "paused"
-          : agents.length > 0 && agents.every((agent) => agent.status === "completed")
-            ? "completed"
-            : run.status === "completed"
-              ? "completed"
-              : "pending";
+      const status: ClaudeWorkflowStatus =
+        run.status === "paused" || run.status === "failed" || run.status === "stopped"
+          ? run.status
+          : statuses.has("running")
+            ? "running"
+            : statuses.has("paused")
+              ? "paused"
+              : agents.length > 0 && agents.every((agent) => agent.status === "completed")
+                ? "completed"
+                : run.status === "completed"
+                  ? "completed"
+                  : "pending";
       return {
         title,
         ...(definitionPhase?.detail ? { detail: definitionPhase.detail } : {}),

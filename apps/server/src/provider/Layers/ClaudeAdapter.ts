@@ -202,6 +202,7 @@ interface ClaudeSessionContext {
   }>;
   readonly inFlightTools: Map<number, ToolInFlight>;
   readonly claudeTasks: Map<string, ClaudeTaskState>;
+  readonly activeBackgroundTaskIds: Set<string>;
   readonly workflowTranscriptDirs: Map<string, string>;
   readonly workflowAgentAttributions: Map<string, ClaudeWorkflowDelegatedModelAttribution>;
   readonly workflowAgentFinalScans: Set<string>;
@@ -1514,6 +1515,32 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
   const offerRuntimeEvent = (event: ProviderRuntimeEvent): Effect.Effect<void> =>
     Queue.offer(runtimeEventQueue, event).pipe(Effect.asVoid);
 
+  const updateBackgroundTaskStatus = Effect.fn("updateBackgroundTaskStatus")(function* (
+    context: ClaudeSessionContext,
+    taskId: string,
+    status: "paused" | "stopped",
+    reason: string,
+  ) {
+    const stamp = yield* makeEventStamp();
+    yield* offerRuntimeEvent({
+      type: "task.updated",
+      eventId: stamp.eventId,
+      provider: PROVIDER,
+      createdAt: stamp.createdAt,
+      threadId: context.session.threadId,
+      ...(context.turnState ? { turnId: asCanonicalTurnId(context.turnState.turnId) } : {}),
+      payload: {
+        taskId: RuntimeTaskId.make(taskId),
+        patch: {
+          status,
+          end_time: stamp.createdAt,
+          reason,
+        },
+      },
+      providerRefs: nativeProviderRefs(context),
+    });
+  });
+
   const logNativeSdkMessage = Effect.fn("logNativeSdkMessage")(function* (
     context: ClaudeSessionContext,
     message: SDKMessage,
@@ -2738,6 +2765,30 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     if ((message.subtype as string) === "background_tasks_changed") {
       const tasks = (message as unknown as { tasks?: unknown }).tasks;
       if (Array.isArray(tasks)) {
+        const activeTaskIds = new Set(
+          tasks
+            .map((task) => {
+              const record =
+                task !== null && typeof task === "object" && !Array.isArray(task)
+                  ? (task as Record<string, unknown>)
+                  : null;
+              const taskId = record?.task_id ?? record?.taskId;
+              return typeof taskId === "string" ? taskId : null;
+            })
+            .filter((taskId): taskId is string => taskId !== null),
+        );
+        for (const taskId of context.activeBackgroundTaskIds) {
+          if (!activeTaskIds.has(taskId)) {
+            yield* updateBackgroundTaskStatus(
+              context,
+              taskId,
+              "stopped",
+              "provider_roster_removed",
+            );
+          }
+        }
+        context.activeBackgroundTaskIds.clear();
+        for (const taskId of activeTaskIds) context.activeBackgroundTaskIds.add(taskId);
         yield* offerRuntimeEvent({
           ...base,
           type: "task.roster",
@@ -2833,6 +2884,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         });
         return;
       case "task_started":
+        context.activeBackgroundTaskIds.add(message.task_id);
         yield* offerRuntimeEvent({
           ...base,
           type: "task.started",
@@ -2848,6 +2900,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         });
         return;
       case "task_progress": {
+        context.activeBackgroundTaskIds.add(message.task_id);
         const rawWorkflowProgress = (
           message as unknown as { readonly workflow_progress?: ReadonlyArray<unknown> }
         ).workflow_progress?.filter(
@@ -2889,6 +2942,16 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       // Task state patch (status/backgrounded/end_time). The terminal
       // task_notification still carries the final summary and usage.
       case "task_updated":
+        if (
+          message.patch.status === "completed" ||
+          message.patch.status === "failed" ||
+          message.patch.status === "killed" ||
+          message.patch.status === "paused"
+        ) {
+          context.activeBackgroundTaskIds.delete(message.task_id);
+        } else if (message.patch.status === "running") {
+          context.activeBackgroundTaskIds.add(message.task_id);
+        }
         yield* offerRuntimeEvent({
           ...base,
           type: "task.updated",
@@ -2899,6 +2962,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         });
         return;
       case "task_notification":
+        context.activeBackgroundTaskIds.delete(message.task_id);
         yield* emitThreadTokenUsage(
           context,
           normalizeClaudeTaskProgressTokenUsage(message.usage, context),
@@ -3819,6 +3883,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         turns: [],
         inFlightTools,
         claudeTasks,
+        activeBackgroundTaskIds: new Set(),
         workflowTranscriptDirs: new Map(),
         workflowAgentAttributions: new Map(),
         workflowAgentFinalScans: new Set(),
@@ -4017,6 +4082,11 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         try: () => context.query.interrupt(),
         catch: (cause) => toRequestError(threadId, "turn/interrupt", cause),
       });
+      const taskIds = [...context.activeBackgroundTaskIds];
+      context.activeBackgroundTaskIds.clear();
+      for (const taskId of taskIds) {
+        yield* updateBackgroundTaskStatus(context, taskId, "paused", "thread_interrupted");
+      }
     },
   );
 
@@ -4040,6 +4110,8 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
             cause,
           }),
       });
+      context.activeBackgroundTaskIds.delete(taskId);
+      yield* updateBackgroundTaskStatus(context, taskId, "stopped", "task_stop_requested");
     },
   );
 

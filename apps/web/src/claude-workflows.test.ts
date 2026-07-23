@@ -267,8 +267,109 @@ describe("deriveClaudeWorkflowRuns", () => {
         id: "agent-verify",
         title: "verify:package-names",
         phase: "Verify",
-        status: "running",
+        status: "completed",
       }),
     ]);
+  });
+
+  it("freezes paused workflow and agent clocks while preserving authoritative usage", () => {
+    const startedAt = "2026-07-22T16:00:00.000Z";
+    const progressAt = "2026-07-22T16:00:08.000Z";
+    const pausedAt = "2026-07-22T16:00:20.000Z";
+    const activities = [
+      {
+        id: "event-1",
+        kind: "task.started",
+        tone: "info",
+        summary: "local_workflow task started",
+        createdAt: startedAt,
+        payload: {
+          taskId: "workflow-task",
+          taskType: "local_workflow",
+          workflowName: "paused-workflow",
+          prompt: `export const meta = { phases: [{ title: 'Map' }] }`,
+        },
+      },
+      {
+        id: "event-2",
+        kind: "task.progress",
+        tone: "info",
+        summary: "Map",
+        createdAt: progressAt,
+        payload: {
+          taskId: "workflow-task",
+          usage: { totalTokens: 13_000, toolCalls: 1, durationMs: 8_000 },
+          workflowProgress: [
+            {
+              type: "workflow_agent",
+              agentId: "agent-map",
+              label: "map",
+              phaseTitle: "Map",
+              state: "progress",
+              startedAt: Date.parse(startedAt),
+              lastProgressAt: Date.parse(progressAt),
+              tokens: 13_000,
+              toolCalls: 1,
+            },
+          ],
+        },
+      },
+      {
+        id: "event-3",
+        kind: "task.updated",
+        tone: "info",
+        summary: "Task updated",
+        createdAt: pausedAt,
+        payload: {
+          taskId: "workflow-task",
+          patch: { status: "paused", reason: "thread_interrupted" },
+        },
+      },
+    ] as unknown as OrchestrationThreadActivity[];
+
+    const [run] = deriveClaudeWorkflowRuns(activities);
+    expect(run).toMatchObject({
+      status: "paused",
+      tokens: 13_000,
+      toolUses: 1,
+      durationMs: 20_000,
+    });
+    expect(run?.phases[0]).toMatchObject({ status: "paused", durationMs: 20_000 });
+    expect(run?.agents[0]).toMatchObject({
+      status: "paused",
+      tokens: 13_000,
+      toolUses: 1,
+      durationMs: 20_000,
+      startedAtMs: Date.parse(startedAt),
+      updatedAtMs: Date.parse(pausedAt),
+    });
+  });
+
+  it("closes a stale running workflow when the authoritative provider roster is empty", () => {
+    const activities = [
+      {
+        id: "event-1",
+        kind: "task.started",
+        tone: "info",
+        summary: "local_workflow task started",
+        createdAt: "2026-07-22T16:00:00.000Z",
+        payload: {
+          taskId: "workflow-task",
+          taskType: "local_workflow",
+          workflowName: "orphaned-workflow",
+        },
+      },
+      {
+        id: "event-2",
+        kind: "task.roster",
+        tone: "info",
+        summary: "Background tasks updated",
+        createdAt: "2026-07-22T16:00:10.000Z",
+        payload: { tasks: [] },
+      },
+    ] as unknown as OrchestrationThreadActivity[];
+
+    const [run] = deriveClaudeWorkflowRuns(activities);
+    expect(run).toMatchObject({ status: "stopped", durationMs: 10_000 });
   });
 });

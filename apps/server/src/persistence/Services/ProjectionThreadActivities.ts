@@ -68,6 +68,18 @@ export interface ProjectionThreadActivityRepositoryShape {
   ) => Effect.Effect<ReadonlyArray<ProjectionThreadActivity>, ProjectionRepositoryError>;
 
   /**
+   * List task lifecycle rows across all threads.
+   *
+   * This intentionally excludes task.progress payloads so startup recovery can
+   * detect abandoned background work without hydrating the full activity or
+   * message history.
+   */
+  readonly listTaskLifecycle: () => Effect.Effect<
+    ReadonlyArray<ProjectionThreadActivity>,
+    ProjectionRepositoryError
+  >;
+
+  /**
    * Delete projected thread activity rows by thread.
    */
   readonly deleteByThreadId: (

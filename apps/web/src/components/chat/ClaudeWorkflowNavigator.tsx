@@ -35,14 +35,31 @@ function compactNumber(value: number): string {
   return `${(value / 1_000_000).toFixed(1)}m`;
 }
 
-function elapsedLabel(durationMs: number, startedAt?: string): string {
-  const derivedDuration = startedAt ? Math.max(0, Date.now() - Date.parse(startedAt)) : 0;
+function timestampMs(value: string | number): number {
+  return typeof value === "number" ? value : Date.parse(value);
+}
+
+function elapsedLabel(durationMs: number, startedAt?: string | number, nowMs = Date.now()): string {
+  const derivedDuration = startedAt !== undefined ? Math.max(0, nowMs - timestampMs(startedAt)) : 0;
   const seconds = Math.floor(Math.max(durationMs, derivedDuration) / 1000);
   if (seconds < 60) return `${seconds}s`;
   const minutes = Math.floor(seconds / 60);
   if (minutes < 60) return `${minutes}m ${seconds % 60}s`;
   const hours = Math.floor(minutes / 60);
   return `${hours}h ${minutes % 60}m`;
+}
+
+function ElapsedText(props: { durationMs: number; startedAt?: string | number | undefined }) {
+  const [nowMs, setNowMs] = useState(() => Date.now());
+
+  useEffect(() => {
+    if (props.startedAt === undefined) return;
+    setNowMs(Date.now());
+    const timer = window.setInterval(() => setNowMs(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, [props.startedAt]);
+
+  return elapsedLabel(props.durationMs, props.startedAt, nowMs);
 }
 
 function StatusMark(props: { status: ClaudeWorkflowStatus; className?: string }) {
@@ -67,7 +84,7 @@ function RunMetrics(props: {
   tokens: number;
   toolUses: number;
   durationMs: number;
-  startedAt?: string;
+  startedAt?: string | number | undefined;
 }) {
   return (
     <span className="flex shrink-0 items-center gap-2 font-mono text-[10px] text-muted-foreground/55">
@@ -79,10 +96,17 @@ function RunMetrics(props: {
       ) : null}
       <span className="inline-flex items-center gap-1">
         <Clock3Icon className="size-2.5" />
-        {elapsedLabel(props.durationMs, props.startedAt)}
+        <ElapsedText durationMs={props.durationMs} startedAt={props.startedAt} />
       </span>
     </span>
   );
+}
+
+function phaseStartedAt(phase: ClaudeWorkflowPhase): number | undefined {
+  const startedAtValues = phase.agents.flatMap((agent) =>
+    agent.status === "running" && agent.startedAtMs !== undefined ? [agent.startedAtMs] : [],
+  );
+  return startedAtValues.length > 0 ? Math.min(...startedAtValues) : undefined;
 }
 
 function PhaseRow(props: {
@@ -185,7 +209,12 @@ function AgentRow(props: { agent: ClaudeWorkflowAgent; onSelect: () => void }) {
         {props.agent.toolUses}
       </span>
       <span className="text-right font-mono text-[10px] text-muted-foreground/55">
-        {elapsedLabel(props.agent.durationMs)}
+        <ElapsedText
+          durationMs={props.agent.durationMs}
+          {...(props.agent.status === "running" && props.agent.startedAtMs !== undefined
+            ? { startedAt: props.agent.startedAtMs }
+            : {})}
+        />
       </span>
       <span className="flex items-center justify-end gap-1 text-[9px] text-muted-foreground/30">
         View
@@ -218,6 +247,9 @@ function AgentDetail(props: { agent: ClaudeWorkflowAgent; onBack: () => void }) 
           tokens={props.agent.tokens}
           toolUses={props.agent.toolUses}
           durationMs={props.agent.durationMs}
+          {...(props.agent.status === "running" && props.agent.startedAtMs !== undefined
+            ? { startedAt: props.agent.startedAtMs }
+            : {})}
         />
       </div>
       <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3 text-[11px] leading-relaxed">
@@ -387,9 +419,7 @@ function WorkflowPanel(props: {
           tokens={props.run.tokens}
           toolUses={props.run.toolUses}
           durationMs={props.run.durationMs}
-          {...(props.run.status === "running" || props.run.status === "paused"
-            ? { startedAt: props.run.startedAt }
-            : {})}
+          {...(props.run.status === "running" ? { startedAt: props.run.startedAt } : {})}
         />
         {props.onStop && (props.run.status === "running" || props.run.status === "paused") ? (
           <button
@@ -472,6 +502,9 @@ function WorkflowPanel(props: {
                     tokens={props.selectedPhase.tokens}
                     toolUses={props.selectedPhase.toolUses}
                     durationMs={props.selectedPhase.durationMs}
+                    {...(phaseStartedAt(props.selectedPhase) !== undefined
+                      ? { startedAt: phaseStartedAt(props.selectedPhase) }
+                      : {})}
                   />
                 ) : null}
               </div>
@@ -613,9 +646,7 @@ export const ClaudeWorkflowNavigator = memo(function ClaudeWorkflowNavigator(pro
             tokens={run.tokens}
             toolUses={run.toolUses}
             durationMs={run.durationMs}
-            {...(run.status === "running" || run.status === "paused"
-              ? { startedAt: run.startedAt }
-              : {})}
+            {...(run.status === "running" ? { startedAt: run.startedAt } : {})}
           />
           <ChevronDownIcon
             className={cn(

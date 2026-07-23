@@ -348,8 +348,118 @@ describe("ClaudeAdapterLive", () => {
 
       const stopTask = adapter.stopTask;
       if (!stopTask) return yield* Effect.die(new Error("Claude adapter did not expose stopTask"));
+      const stoppedEventFiber = yield* Stream.filter(
+        adapter.streamEvents,
+        (event) => event.type === "task.updated",
+      ).pipe(Stream.runHead, Effect.forkChild);
       yield* stopTask(THREAD_ID, "workflow-task-1");
       assert.deepEqual(harness.query.stopTaskCalls, ["workflow-task-1"]);
+      const stoppedEvent = yield* Fiber.join(stoppedEventFiber);
+      assert.equal(stoppedEvent._tag, "Some");
+      if (stoppedEvent._tag === "Some" && stoppedEvent.value.type === "task.updated") {
+        assert.equal(stoppedEvent.value.payload.taskId, "workflow-task-1");
+        assert.equal(stoppedEvent.value.payload.patch.status, "stopped");
+        assert.equal(stoppedEvent.value.payload.patch.reason, "task_stop_requested");
+      }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("marks active Claude workflow tasks paused when the thread is interrupted", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      const startedEventFiber = yield* Stream.filter(
+        adapter.streamEvents,
+        (event) => event.type === "task.started",
+      ).pipe(Stream.runHead, Effect.forkChild);
+      harness.query.emit({
+        type: "system",
+        subtype: "task_started",
+        task_id: "workflow-task-1",
+        task_type: "local_workflow",
+        description: "Research the repository",
+        session_id: "session",
+        uuid: "task-started",
+      } as unknown as SDKMessage);
+      yield* Fiber.join(startedEventFiber);
+
+      const pausedEventFiber = yield* Stream.filter(
+        adapter.streamEvents,
+        (event) => event.type === "task.updated",
+      ).pipe(Stream.runHead, Effect.forkChild);
+      yield* adapter.interruptTurn(THREAD_ID);
+
+      assert.equal(harness.query.interruptCalls.length, 1);
+      const pausedEvent = yield* Fiber.join(pausedEventFiber);
+      assert.equal(pausedEvent._tag, "Some");
+      if (pausedEvent._tag === "Some" && pausedEvent.value.type === "task.updated") {
+        assert.equal(pausedEvent.value.payload.taskId, "workflow-task-1");
+        assert.equal(pausedEvent.value.payload.patch.status, "paused");
+        assert.equal(pausedEvent.value.payload.patch.reason, "thread_interrupted");
+      }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("stops tasks removed from the provider background-task roster", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      const rosterEventFiber = yield* Stream.filter(
+        adapter.streamEvents,
+        (event) => event.type === "task.roster",
+      ).pipe(Stream.runHead, Effect.forkChild);
+      harness.query.emit({
+        type: "system",
+        subtype: "background_tasks_changed",
+        tasks: [
+          {
+            task_id: "workflow-task-1",
+            task_type: "local_workflow",
+            description: "Research the repository",
+          },
+        ],
+        session_id: "session",
+        uuid: "roster-active",
+      } as unknown as SDKMessage);
+      yield* Fiber.join(rosterEventFiber);
+
+      const stoppedEventFiber = yield* Stream.filter(
+        adapter.streamEvents,
+        (event) => event.type === "task.updated",
+      ).pipe(Stream.runHead, Effect.forkChild);
+      harness.query.emit({
+        type: "system",
+        subtype: "background_tasks_changed",
+        tasks: [],
+        session_id: "session",
+        uuid: "roster-empty",
+      } as unknown as SDKMessage);
+
+      const stoppedEvent = yield* Fiber.join(stoppedEventFiber);
+      assert.equal(stoppedEvent._tag, "Some");
+      if (stoppedEvent._tag === "Some" && stoppedEvent.value.type === "task.updated") {
+        assert.equal(stoppedEvent.value.payload.taskId, "workflow-task-1");
+        assert.equal(stoppedEvent.value.payload.patch.status, "stopped");
+        assert.equal(stoppedEvent.value.payload.patch.reason, "provider_roster_removed");
+      }
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),

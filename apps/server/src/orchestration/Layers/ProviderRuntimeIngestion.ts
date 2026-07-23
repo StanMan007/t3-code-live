@@ -2,6 +2,7 @@ import {
   ApprovalRequestId,
   type AssistantDeliveryMode,
   CommandId,
+  EventId,
   MessageId,
   type OrchestrationEvent,
   type OrchestrationMessage,
@@ -20,6 +21,7 @@ import {
 import * as Cache from "effect/Cache";
 import * as Cause from "effect/Cause";
 import * as Crypto from "effect/Crypto";
+import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -30,6 +32,11 @@ import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
 import { ProjectionTurnRepository } from "../../persistence/Services/ProjectionTurns.ts";
 import { ProjectionTurnRepositoryLive } from "../../persistence/Layers/ProjectionTurns.ts";
+import {
+  ProjectionThreadActivityRepository,
+  type ProjectionThreadActivity,
+} from "../../persistence/Services/ProjectionThreadActivities.ts";
+import { ProjectionThreadActivityRepositoryLive } from "../../persistence/Layers/ProjectionThreadActivities.ts";
 import { isGitRepository } from "../../git/Utils.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
@@ -41,6 +48,62 @@ import { ServerSettingsService } from "../../serverSettings.ts";
 
 const providerTurnKey = (threadId: ThreadId, turnId: TurnId) => `${threadId}:${turnId}`;
 const providerTaskKey = (threadId: ThreadId, taskId: string) => `${threadId}:${taskId}`;
+
+interface AbandonedLocalWorkflowTask {
+  readonly threadId: ThreadId;
+  readonly taskId: string;
+  readonly title: string;
+}
+
+const TERMINAL_TASK_STATUSES = new Set(["completed", "failed", "stopped", "killed"]);
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+export function findAbandonedLocalWorkflowTasks(
+  activities: ReadonlyArray<ProjectionThreadActivity>,
+): ReadonlyArray<AbandonedLocalWorkflowTask> {
+  const openTasks = new Map<string, AbandonedLocalWorkflowTask>();
+
+  for (const activity of activities) {
+    const payload = asRecord(activity.payload);
+    const taskId = typeof payload?.taskId === "string" ? payload.taskId : undefined;
+    if (!taskId) continue;
+    const key = providerTaskKey(activity.threadId, taskId);
+
+    if (activity.kind === "task.started" && payload?.taskType === "local_workflow") {
+      const titleCandidate =
+        typeof payload.workflowName === "string"
+          ? payload.workflowName
+          : typeof payload.detail === "string"
+            ? payload.detail
+            : activity.summary;
+      openTasks.set(key, {
+        threadId: activity.threadId,
+        taskId,
+        title: titleCandidate.trim() || "Workflow",
+      });
+      continue;
+    }
+
+    if (activity.kind === "task.completed") {
+      openTasks.delete(key);
+      continue;
+    }
+
+    if (activity.kind === "task.updated") {
+      const status = asRecord(payload?.patch)?.status;
+      if (typeof status === "string" && TERMINAL_TASK_STATUSES.has(status)) {
+        openTasks.delete(key);
+      }
+    }
+  }
+
+  return [...openTasks.values()];
+}
 
 // Fallback when the in-memory description cache no longer has the task name
 // (server restart, session-exit sweep, TTL/capacity eviction): earlier
@@ -751,6 +814,7 @@ const make = Effect.gen(function* () {
   const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
   const providerService = yield* ProviderService;
   const projectionTurnRepository = yield* ProjectionTurnRepository;
+  const projectionThreadActivityRepository = yield* ProjectionThreadActivityRepository;
   const serverSettingsService = yield* ServerSettingsService;
   const providerCommandId = (event: ProviderRuntimeEvent, tag: string) =>
     crypto.randomUUIDv4.pipe(
@@ -1861,6 +1925,44 @@ const make = Effect.gen(function* () {
 
   const worker = yield* makeDrainableWorker(processInputSafely);
 
+  const reconcileAbandonedLocalWorkflows = Effect.fn("reconcileAbandonedLocalWorkflows")(
+    function* () {
+      const lifecycleActivities = yield* projectionThreadActivityRepository.listTaskLifecycle();
+      const abandonedTasks = findAbandonedLocalWorkflowTasks(lifecycleActivities);
+      if (abandonedTasks.length === 0) return;
+
+      const recoveredAt = DateTime.formatIso(yield* DateTime.now);
+      yield* Effect.forEach(
+        abandonedTasks,
+        (task) =>
+          orchestrationEngine.dispatch({
+            type: "thread.activity.append",
+            commandId: CommandId.make(`workflow-recovery:${task.threadId}:${task.taskId}`),
+            threadId: task.threadId,
+            activity: {
+              id: EventId.make(`workflow-recovery:${task.threadId}:${task.taskId}`),
+              createdAt: recoveredAt,
+              tone: "error",
+              kind: "task.completed",
+              summary: `${task.title} stopped after app restart`,
+              payload: {
+                taskId: task.taskId,
+                status: "stopped",
+                summary: "Workflow stopped because its provider process exited with the app.",
+                recoveryReason: "server_restart",
+              },
+              turnId: null,
+            },
+            createdAt: recoveredAt,
+          }),
+        { concurrency: 1, discard: true },
+      );
+      yield* Effect.logInfo("reconciled abandoned local workflows", {
+        count: abandonedTasks.length,
+      });
+    },
+  );
+
   const start: ProviderRuntimeIngestionShape["start"] = () =>
     Effect.gen(function* () {
       yield* Effect.forkScoped(
@@ -1876,6 +1978,11 @@ const make = Effect.gen(function* () {
           return worker.enqueue({ source: "domain", event });
         }),
       );
+      yield* reconcileAbandonedLocalWorkflows().pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("failed to reconcile abandoned local workflows", { cause }),
+        ),
+      );
     });
 
   return {
@@ -1887,4 +1994,7 @@ const make = Effect.gen(function* () {
 export const ProviderRuntimeIngestionLive = Layer.effect(
   ProviderRuntimeIngestionService,
   make,
-).pipe(Layer.provide(ProjectionTurnRepositoryLive));
+).pipe(
+  Layer.provide(ProjectionTurnRepositoryLive),
+  Layer.provide(ProjectionThreadActivityRepositoryLive),
+);

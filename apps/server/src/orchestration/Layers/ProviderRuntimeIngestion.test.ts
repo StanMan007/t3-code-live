@@ -36,6 +36,7 @@ import { afterEach, describe, expect, it } from "vite-plus/test";
 import { OrchestrationEventStoreLive } from "../../persistence/Layers/OrchestrationEventStore.ts";
 import { OrchestrationCommandReceiptRepositoryLive } from "../../persistence/Layers/OrchestrationCommandReceipts.ts";
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
+import type { ProjectionThreadActivity } from "../../persistence/Services/ProjectionThreadActivities.ts";
 import {
   ProviderService,
   type ProviderServiceShape,
@@ -44,7 +45,10 @@ import * as RepositoryIdentityResolver from "../../project/RepositoryIdentityRes
 import { OrchestrationEngineLive } from "./OrchestrationEngine.ts";
 import { OrchestrationProjectionPipelineLive } from "./ProjectionPipeline.ts";
 import { OrchestrationProjectionSnapshotQueryLive } from "./ProjectionSnapshotQuery.ts";
-import { ProviderRuntimeIngestionLive } from "./ProviderRuntimeIngestion.ts";
+import {
+  findAbandonedLocalWorkflowTasks,
+  ProviderRuntimeIngestionLive,
+} from "./ProviderRuntimeIngestion.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { ProviderRuntimeIngestionService } from "../Services/ProviderRuntimeIngestion.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
@@ -219,7 +223,10 @@ describe("ProviderRuntimeIngestion", () => {
     }
   });
 
-  async function createHarness(options?: { serverSettings?: Partial<ServerSettings> }) {
+  async function createHarness(options?: {
+    serverSettings?: Partial<ServerSettings>;
+    startIngestion?: boolean;
+  }) {
     const workspaceRoot = makeTempDir("t3-provider-project-");
     NodeFS.mkdirSync(NodePath.join(workspaceRoot, ".git"));
     const provider = createProviderServiceHarness();
@@ -249,7 +256,11 @@ describe("ProviderRuntimeIngestion", () => {
     const snapshotQuery = await runtime.runPromise(Effect.service(ProjectionSnapshotQuery));
     const ingestion = await runtime.runPromise(Effect.service(ProviderRuntimeIngestionService));
     scope = await Effect.runPromise(Scope.make("sequential"));
-    await Effect.runPromise(ingestion.start().pipe(Scope.provide(scope)));
+    const startIngestion = () =>
+      Effect.runPromise(ingestion.start().pipe(Scope.provide(scope as Scope.Closeable)));
+    if (options?.startIngestion !== false) {
+      await startIngestion();
+    }
     const drain = () => Effect.runPromise(ingestion.drain);
 
     const createdAt = "2026-01-01T00:00:00.000Z";
@@ -317,8 +328,119 @@ describe("ProviderRuntimeIngestion", () => {
       emit: provider.emit,
       setProviderSession: provider.setSession,
       drain,
+      startIngestion,
     };
   }
+
+  it("identifies only unterminated local workflows as abandoned", () => {
+    const lifecycleActivities = [
+      {
+        activityId: asEventId("workflow-open-started"),
+        threadId: asThreadId("thread-1"),
+        turnId: null,
+        tone: "info",
+        kind: "task.started",
+        summary: "Open workflow",
+        payload: {
+          taskId: "workflow-open",
+          taskType: "local_workflow",
+          workflowName: "open-workflow",
+        },
+        createdAt: "2026-01-01T00:00:00.000Z",
+      },
+      {
+        activityId: asEventId("workflow-complete-started"),
+        threadId: asThreadId("thread-1"),
+        turnId: null,
+        tone: "info",
+        kind: "task.started",
+        summary: "Complete workflow",
+        payload: {
+          taskId: "workflow-complete",
+          taskType: "local_workflow",
+        },
+        createdAt: "2026-01-01T00:00:01.000Z",
+      },
+      {
+        activityId: asEventId("workflow-complete-terminal"),
+        threadId: asThreadId("thread-1"),
+        turnId: null,
+        tone: "info",
+        kind: "task.completed",
+        summary: "Complete workflow finished",
+        payload: { taskId: "workflow-complete", status: "completed" },
+        createdAt: "2026-01-01T00:00:02.000Z",
+      },
+      {
+        activityId: asEventId("ordinary-task-started"),
+        threadId: asThreadId("thread-1"),
+        turnId: null,
+        tone: "info",
+        kind: "task.started",
+        summary: "Ordinary task",
+        payload: { taskId: "ordinary-task", taskType: "local_agent" },
+        createdAt: "2026-01-01T00:00:03.000Z",
+      },
+    ] satisfies ReadonlyArray<ProjectionThreadActivity>;
+
+    expect(findAbandonedLocalWorkflowTasks(lifecycleActivities)).toEqual([
+      {
+        threadId: asThreadId("thread-1"),
+        taskId: "workflow-open",
+        title: "open-workflow",
+      },
+    ]);
+  });
+
+  it("closes a local workflow left running across server restart", async () => {
+    const harness = await createHarness({ startIngestion: false });
+    const threadId = asThreadId("thread-1");
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.activity.append",
+        commandId: CommandId.make("cmd-abandoned-workflow-started"),
+        threadId,
+        activity: {
+          id: asEventId("evt-abandoned-workflow-started"),
+          tone: "info",
+          kind: "task.started",
+          summary: "restart-proof started",
+          payload: {
+            taskId: "workflow-restart-proof",
+            taskType: "local_workflow",
+            workflowName: "restart-proof",
+          },
+          turnId: null,
+          createdAt: "2026-01-01T00:00:04.000Z",
+        },
+        createdAt: "2026-01-01T00:00:04.000Z",
+      }),
+    );
+    await waitForThread(harness.readModel, (thread) =>
+      thread.activities.some((activity) => activity.id === "evt-abandoned-workflow-started"),
+    );
+
+    await harness.startIngestion();
+
+    const recoveredThread = await waitForThread(harness.readModel, (thread) =>
+      thread.activities.some(
+        (activity) =>
+          activity.kind === "task.completed" &&
+          (activity.payload as { taskId?: string; recoveryReason?: string }).taskId ===
+            "workflow-restart-proof" &&
+          (activity.payload as { taskId?: string; recoveryReason?: string }).recoveryReason ===
+            "server_restart",
+      ),
+    );
+    expect(recoveredThread.activities.at(-1)).toMatchObject({
+      kind: "task.completed",
+      payload: {
+        taskId: "workflow-restart-proof",
+        status: "stopped",
+        recoveryReason: "server_restart",
+      },
+    });
+  });
 
   it("maps turn started/completed events into thread session updates", async () => {
     const harness = await createHarness();
@@ -2166,7 +2288,7 @@ describe("ProviderRuntimeIngestion", () => {
     expect(resumedMessage?.text).toBe(" second half");
     expect(resumedMessage?.streaming).toBe(false);
 
-    const events = await Effect.runPromise(
+    const events = await runtime!.runPromise(
       Stream.runCollect(harness.engine.readEvents(0)).pipe(
         Effect.map((chunk) => Array.from(chunk)),
       ),
