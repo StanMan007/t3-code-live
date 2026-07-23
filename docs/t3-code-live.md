@@ -39,6 +39,41 @@ focused test. It does not run lint, broad typechecks, broad tests, builds, or un
 both implementations encode an incompatible product choice, the task stops with a recommended
 two-choice decision instead of silently choosing one.
 
+## New computer setup
+
+The Git repository carries the fork implementation, preservation registry, updater prompt, tests, and
+T3 Code Live documentation. Threads, provider sessions, credentials, Keychain entries, and
+`~/.t3-live` remain local to each computer.
+
+On a new computer, clone the writable fork and run the guarded setup script:
+
+```sh
+git clone https://github.com/StanMan007/t3-code-live.git
+cd t3-code-live
+./scripts/setup-t3-code-live-clone.sh --install
+```
+
+The script verifies that `origin` is the writable `StanMan007/t3-code-live` fork, adds or verifies
+`upstream` as `pingdotgg/t3code`, disables pushes to `upstream`, fetches both `main` branches, and
+optionally installs the locked dependencies. It refuses to rewrite unexpected remotes.
+
+Authenticate GitHub, Claude, and Codex independently on the new computer. No account sessions,
+tokens, `.env` files, application databases, or signing private keys belong in this repository.
+Start the source checkout with `pnpm run dev:desktop`; use the in-app power control when the clean,
+pushed source should become the installed Nightly app.
+
+For ordinary two-computer work:
+
+1. Begin from a clean checkout and run `git pull --ff-only origin main`.
+2. Make and verify one cohesive change on one computer at a time.
+3. Commit and push that change to `origin/main`.
+4. Pull `origin/main` on the other computer before continuing there.
+5. Use the guarded in-app updater on either computer to merge new `upstream/main` commits and
+   fast-forward the fork.
+
+Git synchronizes committed and pushed work. It does not synchronize uncommitted edits, running
+processes, credentials, local threads, or an installed `.app`.
+
 Source sync, local iteration, and signed installation are intentionally separate:
 
 - The lightning control opens the checkout in hot-reload mode using the existing `dev:desktop`
