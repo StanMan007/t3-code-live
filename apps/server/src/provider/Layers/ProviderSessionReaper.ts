@@ -15,10 +15,37 @@ import { ProviderService } from "../Services/ProviderService.ts";
 
 const DEFAULT_INACTIVITY_THRESHOLD_MS = 30 * 60 * 1000;
 const DEFAULT_SWEEP_INTERVAL_MS = 5 * 60 * 1000;
+const DEFAULT_BACKGROUND_TASK_STALL_THRESHOLD_MS = 60 * 60 * 1000;
 
 export interface ProviderSessionReaperLiveOptions {
   readonly inactivityThresholdMs?: number;
   readonly sweepIntervalMs?: number;
+  readonly backgroundTaskStallThresholdMs?: number;
+}
+
+function readBackgroundTaskLease(runtimePayload: unknown): {
+  readonly taskIds: ReadonlyArray<string>;
+  readonly lastProgressAt?: string;
+} {
+  if (
+    runtimePayload === null ||
+    typeof runtimePayload !== "object" ||
+    Array.isArray(runtimePayload)
+  ) {
+    return { taskIds: [] };
+  }
+  const payload = runtimePayload as Record<string, unknown>;
+  const taskIds = Array.isArray(payload.backgroundTaskIds)
+    ? payload.backgroundTaskIds.filter(
+        (taskId): taskId is string => typeof taskId === "string" && taskId.length > 0,
+      )
+    : [];
+  return {
+    taskIds,
+    ...(typeof payload.backgroundTaskLastProgressAt === "string"
+      ? { lastProgressAt: payload.backgroundTaskLastProgressAt }
+      : {}),
+  };
 }
 
 const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =>
@@ -32,6 +59,10 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
       options?.inactivityThresholdMs ?? DEFAULT_INACTIVITY_THRESHOLD_MS,
     );
     const sweepIntervalMs = Math.max(1, options?.sweepIntervalMs ?? DEFAULT_SWEEP_INTERVAL_MS);
+    const backgroundTaskStallThresholdMs = Math.max(
+      1,
+      options?.backgroundTaskStallThresholdMs ?? DEFAULT_BACKGROUND_TASK_STALL_THRESHOLD_MS,
+    );
 
     const sweep = Effect.gen(function* () {
       const bindings = yield* directory.listBindings();
@@ -54,14 +85,32 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
         }
 
         const idleDurationMs = now - lastSeenMs;
-        if (idleDurationMs < inactivityThresholdMs) {
+        const backgroundTaskLease = readBackgroundTaskLease(binding.runtimePayload);
+        const lastBackgroundProgressMs = backgroundTaskLease.lastProgressAt
+          ? Date.parse(backgroundTaskLease.lastProgressAt)
+          : Number.NaN;
+        const backgroundTaskProgressAgeMs = Number.isNaN(lastBackgroundProgressMs)
+          ? Number.POSITIVE_INFINITY
+          : now - lastBackgroundProgressMs;
+        const hasActiveBackgroundTasks = backgroundTaskLease.taskIds.length > 0;
+        const backgroundWorkStalled =
+          hasActiveBackgroundTasks && backgroundTaskProgressAgeMs >= backgroundTaskStallThresholdMs;
+
+        if (hasActiveBackgroundTasks && !backgroundWorkStalled) {
+          yield* Effect.logDebug("provider.session.reaper.skipped-active-background-work", {
+            threadId: binding.threadId,
+            taskIds: backgroundTaskLease.taskIds,
+            backgroundTaskProgressAgeMs,
+            idleDurationMs,
+          });
           continue;
         }
+        if (!backgroundWorkStalled && idleDurationMs < inactivityThresholdMs) continue;
 
         const thread = yield* projectionSnapshotQuery
           .getThreadShellById(binding.threadId)
           .pipe(Effect.map(Option.getOrUndefined));
-        if (thread?.session?.activeTurnId != null) {
+        if (thread?.session?.activeTurnId != null && !backgroundWorkStalled) {
           yield* Effect.logDebug("provider.session.reaper.skipped-active-turn", {
             threadId: binding.threadId,
             activeTurnId: thread.session.activeTurnId,
@@ -76,7 +125,13 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
               threadId: binding.threadId,
               provider: binding.provider,
               idleDurationMs,
-              reason: "inactivity_threshold",
+              reason: backgroundWorkStalled ? "background_work_stalled" : "inactivity_threshold",
+              ...(backgroundWorkStalled
+                ? {
+                    taskIds: backgroundTaskLease.taskIds,
+                    backgroundTaskProgressAgeMs,
+                  }
+                : {}),
             }),
           ),
           Effect.as(true),
@@ -124,6 +179,7 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
         yield* Effect.logInfo("provider.session.reaper.started", {
           inactivityThresholdMs,
           sweepIntervalMs,
+          backgroundTaskStallThresholdMs,
         });
       });
 

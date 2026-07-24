@@ -176,6 +176,7 @@ const ProviderRuntimeEventType = Schema.Literals([
   "user-input.resolved",
   "task.started",
   "task.progress",
+  "task.heartbeat",
   "task.completed",
   "hook.started",
   "hook.progress",
@@ -226,6 +227,7 @@ const UserInputRequestedType = Schema.Literal("user-input.requested");
 const UserInputResolvedType = Schema.Literal("user-input.resolved");
 const TaskStartedType = Schema.Literal("task.started");
 const TaskProgressType = Schema.Literal("task.progress");
+const TaskHeartbeatType = Schema.Literal("task.heartbeat");
 const TaskUpdatedType = Schema.Literal("task.updated");
 const TaskRosterType = Schema.Literal("task.roster");
 const TaskCompletedType = Schema.Literal("task.completed");
@@ -488,6 +490,11 @@ const TaskProgressPayload = Schema.Struct({
   workflowProgress: Schema.optional(Schema.Array(UnknownRecordSchema)),
 });
 export type TaskProgressPayload = typeof TaskProgressPayload.Type;
+
+const TaskHeartbeatPayload = Schema.Struct({
+  taskIds: Schema.Array(RuntimeTaskId),
+});
+export type TaskHeartbeatPayload = typeof TaskHeartbeatPayload.Type;
 
 const TaskUpdatedPayload = Schema.Struct({
   taskId: RuntimeTaskId,
@@ -864,6 +871,13 @@ const ProviderRuntimeTaskProgressEvent = Schema.Struct({
 });
 export type ProviderRuntimeTaskProgressEvent = typeof ProviderRuntimeTaskProgressEvent.Type;
 
+const ProviderRuntimeTaskHeartbeatEvent = Schema.Struct({
+  ...ProviderRuntimeEventBase.fields,
+  type: TaskHeartbeatType,
+  payload: TaskHeartbeatPayload,
+});
+export type ProviderRuntimeTaskHeartbeatEvent = typeof ProviderRuntimeTaskHeartbeatEvent.Type;
+
 const ProviderRuntimeTaskUpdatedEvent = Schema.Struct({
   ...ProviderRuntimeEventBase.fields,
   type: TaskUpdatedType,
@@ -1038,6 +1052,7 @@ export const ProviderRuntimeEventV2 = Schema.Union([
   ProviderRuntimeUserInputResolvedEvent,
   ProviderRuntimeTaskStartedEvent,
   ProviderRuntimeTaskProgressEvent,
+  ProviderRuntimeTaskHeartbeatEvent,
   ProviderRuntimeTaskUpdatedEvent,
   ProviderRuntimeTaskRosterEvent,
   ProviderRuntimeTaskCompletedEvent,

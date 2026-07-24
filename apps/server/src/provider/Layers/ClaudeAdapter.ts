@@ -96,6 +96,7 @@ const encodeUnknownJsonStringExit = Schema.encodeUnknownExit(Schema.UnknownFromJ
 const decodeUnknownJsonStringExit = Schema.decodeUnknownExit(Schema.UnknownFromJsonString);
 
 const PROVIDER = ProviderDriverKind.make("claudeAgent");
+const DEFAULT_BACKGROUND_TASK_HEARTBEAT_INTERVAL_MS = 15_000;
 const CODEX_MCP_TOOL_NAME = "mcp__codex__codex";
 const CODEX_MCP_REPLY_TOOL_NAME = "mcp__codex__codex-reply";
 const CODEX_AGENT_ROUTING_REMINDER = `MANDATORY CODEX ROUTING CONTRACT:
@@ -437,6 +438,7 @@ interface ClaudeQueryRuntime extends AsyncIterable<SDKMessage> {
 export interface ClaudeAdapterLiveOptions {
   readonly instanceId?: ProviderInstanceId;
   readonly environment?: NodeJS.ProcessEnv;
+  readonly backgroundTaskHeartbeatIntervalMs?: number;
   readonly createQuery?: (input: {
     readonly prompt: AsyncIterable<SDKUserMessage>;
     readonly options: ClaudeQueryOptions;
@@ -1795,6 +1797,10 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       }) as ClaudeQueryRuntime);
 
   const sessions = new Map<ThreadId, ClaudeSessionContext>();
+  const backgroundTaskHeartbeatIntervalMs = Math.max(
+    1,
+    options?.backgroundTaskHeartbeatIntervalMs ?? DEFAULT_BACKGROUND_TASK_HEARTBEAT_INTERVAL_MS,
+  );
 
   const enrichWorkflowProgressAttribution = Effect.fn("enrichWorkflowProgressAttribution")(
     function* (
@@ -1951,6 +1957,40 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
 
   const offerRuntimeEvent = (event: ProviderRuntimeEvent): Effect.Effect<void> =>
     Queue.offer(runtimeEventQueue, event).pipe(Effect.asVoid);
+
+  yield* Effect.forever(
+    Effect.sleep(backgroundTaskHeartbeatIntervalMs).pipe(
+      Effect.andThen(
+        Effect.forEach(
+          sessions.values(),
+          (context) =>
+            Effect.gen(function* () {
+              if (context.stopped || context.activeBackgroundTaskIds.size === 0) {
+                return;
+              }
+              const stamp = yield* makeEventStamp();
+              yield* offerRuntimeEvent({
+                type: "task.heartbeat",
+                eventId: stamp.eventId,
+                provider: PROVIDER,
+                createdAt: stamp.createdAt,
+                threadId: context.session.threadId,
+                ...(context.turnState
+                  ? { turnId: asCanonicalTurnId(context.turnState.turnId) }
+                  : {}),
+                payload: {
+                  taskIds: [...context.activeBackgroundTaskIds]
+                    .sort()
+                    .map((taskId) => RuntimeTaskId.make(taskId)),
+                },
+                providerRefs: nativeProviderRefs(context),
+              });
+            }),
+          { discard: true },
+        ),
+      ),
+    ),
+  ).pipe(Effect.forkScoped);
 
   const updateBackgroundTaskStatus = Effect.fn("updateBackgroundTaskStatus")(function* (
     context: ClaudeSessionContext,
@@ -3726,6 +3766,12 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     if (context.stopped) return;
 
     context.stopped = true;
+    const activeBackgroundTaskIds = [...context.activeBackgroundTaskIds];
+    context.activeBackgroundTaskIds.clear();
+    for (const taskId of activeBackgroundTaskIds) {
+      context.workflowProgressByTaskId.delete(taskId);
+      yield* updateBackgroundTaskStatus(context, taskId, "stopped", "session_stopped");
+    }
 
     for (const [requestId, pending] of context.pendingApprovals) {
       yield* Deferred.succeed(pending.decision, "cancel");

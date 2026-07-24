@@ -17,6 +17,7 @@ import {
   ProviderDriverKind,
   ProviderItemId,
   ProviderRuntimeEvent,
+  RuntimeTaskId,
   type RuntimeMode,
   ThreadId,
   ProviderInstanceId,
@@ -166,6 +167,7 @@ function makeHarness(config?: {
   readonly baseDir?: string;
   readonly claudeConfig?: Partial<ClaudeSettings>;
   readonly instanceId?: ProviderInstanceId;
+  readonly backgroundTaskHeartbeatIntervalMs?: number;
 }) {
   const query = new FakeClaudeQuery();
   let createInput:
@@ -177,6 +179,11 @@ function makeHarness(config?: {
 
   const adapterOptions: ClaudeAdapterLiveOptions = {
     ...(config?.instanceId ? { instanceId: config.instanceId } : {}),
+    ...(config?.backgroundTaskHeartbeatIntervalMs
+      ? {
+          backgroundTaskHeartbeatIntervalMs: config.backgroundTaskHeartbeatIntervalMs,
+        }
+      : {}),
     createQuery: (input) => {
       createInput = input;
       return query;
@@ -731,6 +738,88 @@ describe("ClaudeAdapterLive", () => {
         assert.equal(pausedEvent.value.payload.patch.status, "paused");
         assert.equal(pausedEvent.value.payload.patch.reason, "thread_interrupted");
       }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("heartbeats active workflows and settles every child when the session stops", () => {
+    const harness = makeHarness({
+      backgroundTaskHeartbeatIntervalMs: 1_000,
+    });
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      const startedEventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.type === "task.started"),
+        Stream.take(2),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      for (const taskId of ["workflow-task-opus", "workflow-task-gpt"]) {
+        harness.query.emit({
+          type: "system",
+          subtype: "task_started",
+          task_id: taskId,
+          task_type: "local_workflow",
+          description: `Run ${taskId}`,
+          session_id: "session",
+          uuid: `started-${taskId}`,
+        } as unknown as SDKMessage);
+      }
+      yield* Fiber.join(startedEventsFiber);
+
+      const heartbeatFiber = yield* Stream.filter(
+        adapter.streamEvents,
+        (event) => event.type === "task.heartbeat",
+      ).pipe(Stream.runHead, Effect.forkChild);
+      yield* TestClock.adjust("1 second");
+      const heartbeat = yield* Fiber.join(heartbeatFiber);
+      assert.equal(heartbeat._tag, "Some");
+      if (heartbeat._tag === "Some" && heartbeat.value.type === "task.heartbeat") {
+        assert.deepEqual(heartbeat.value.payload.taskIds, [
+          RuntimeTaskId.make("workflow-task-gpt"),
+          RuntimeTaskId.make("workflow-task-opus"),
+        ]);
+      }
+
+      const stoppedEventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.type === "task.updated"),
+        Stream.take(2),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      yield* adapter.stopSession(THREAD_ID);
+      const stoppedEvents = Array.from(yield* Fiber.join(stoppedEventsFiber));
+      assert.deepEqual(
+        stoppedEvents.map((event) =>
+          event.type === "task.updated"
+            ? {
+                taskId: event.payload.taskId,
+                status: event.payload.patch.status,
+                reason: event.payload.patch.reason,
+              }
+            : null,
+        ),
+        [
+          {
+            taskId: RuntimeTaskId.make("workflow-task-opus"),
+            status: "stopped",
+            reason: "session_stopped",
+          },
+          {
+            taskId: RuntimeTaskId.make("workflow-task-gpt"),
+            status: "stopped",
+            reason: "session_stopped",
+          },
+        ],
+      );
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),

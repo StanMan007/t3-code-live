@@ -1536,6 +1536,80 @@ fanout.layer("ProviderServiceLive fanout", (it) => {
     }),
   );
 
+  it.effect("persists background workflow progress and heartbeat leases", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
+      const session = yield* provider.startSession(asThreadId("thread-background-lease"), {
+        provider: ProviderDriverKind.make("claudeAgent"),
+        providerInstanceId: claudeAgentInstanceId,
+        threadId: asThreadId("thread-background-lease"),
+        runtimeMode: "full-access",
+      });
+
+      fanout.claude.emit({
+        type: "task.started",
+        eventId: asEventId("evt-background-started"),
+        provider: ProviderDriverKind.make("claudeAgent"),
+        createdAt: "2026-07-24T12:00:00.000Z",
+        threadId: session.threadId,
+        payload: {
+          taskId: "workflow-task-1",
+          taskType: "local_workflow",
+          description: "Run the Opus to GPT workflow",
+        },
+      });
+      yield* advanceTestClock(20);
+
+      const startedBinding = Option.getOrThrow(yield* directory.getBinding(session.threadId));
+      assert.deepInclude(startedBinding.runtimePayload as Record<string, unknown>, {
+        backgroundTaskIds: ["workflow-task-1"],
+        backgroundTaskLeaseState: "active",
+        backgroundTaskHeartbeatAt: "2026-07-24T12:00:00.000Z",
+        backgroundTaskLastProgressAt: "2026-07-24T12:00:00.000Z",
+      });
+
+      fanout.claude.emit({
+        type: "task.heartbeat",
+        eventId: asEventId("evt-background-heartbeat"),
+        provider: ProviderDriverKind.make("claudeAgent"),
+        createdAt: "2026-07-24T12:00:15.000Z",
+        threadId: session.threadId,
+        payload: {
+          taskIds: ["workflow-task-1"],
+        },
+      });
+      yield* advanceTestClock(20);
+
+      const heartbeatBinding = Option.getOrThrow(yield* directory.getBinding(session.threadId));
+      assert.deepInclude(heartbeatBinding.runtimePayload as Record<string, unknown>, {
+        backgroundTaskIds: ["workflow-task-1"],
+        backgroundTaskHeartbeatAt: "2026-07-24T12:00:15.000Z",
+        backgroundTaskLastProgressAt: "2026-07-24T12:00:00.000Z",
+      });
+
+      fanout.claude.emit({
+        type: "task.completed",
+        eventId: asEventId("evt-background-completed"),
+        provider: ProviderDriverKind.make("claudeAgent"),
+        createdAt: "2026-07-24T12:01:00.000Z",
+        threadId: session.threadId,
+        payload: {
+          taskId: "workflow-task-1",
+          status: "completed",
+        },
+      });
+      yield* advanceTestClock(20);
+
+      const completedBinding = Option.getOrThrow(yield* directory.getBinding(session.threadId));
+      assert.deepInclude(completedBinding.runtimePayload as Record<string, unknown>, {
+        backgroundTaskIds: [],
+        backgroundTaskLeaseState: "idle",
+        backgroundTaskLastProgressAt: "2026-07-24T12:01:00.000Z",
+      });
+    }),
+  );
+
   it.effect("fans out canonical runtime events in emission order", () =>
     Effect.gen(function* () {
       const provider = yield* ProviderService.ProviderService;

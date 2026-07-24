@@ -90,6 +90,15 @@ export interface ClaudeWorkflowAgent {
   updatedAtMs?: number;
 }
 
+export function isClaudeWorkflowDelegationInFlight(
+  agent: Pick<ClaudeWorkflowAgent, "delegationState" | "status">,
+): boolean {
+  return (
+    agent.delegationState === "requested" &&
+    (agent.status === "pending" || agent.status === "running")
+  );
+}
+
 export interface ClaudeWorkflowPhase {
   title: string;
   detail?: string;

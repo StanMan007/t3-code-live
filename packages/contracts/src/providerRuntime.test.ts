@@ -181,4 +181,23 @@ describe("ProviderRuntimeEvent", () => {
     expect(parsed.payload.usage.maxTokens).toBe(200000);
     expect(parsed.payload.usage.usedTokens).toBe(31251);
   });
+
+  it("decodes background task heartbeat snapshots", () => {
+    const parsed = decodeRuntimeEvent({
+      type: "task.heartbeat",
+      eventId: "event-task-heartbeat-1",
+      provider: "claudeAgent",
+      createdAt: "2026-02-28T00:00:05.000Z",
+      threadId: "thread-1",
+      payload: {
+        taskIds: ["workflow-task-1", "workflow-task-2"],
+      },
+    });
+
+    expect(parsed.type).toBe("task.heartbeat");
+    if (parsed.type !== "task.heartbeat") {
+      throw new Error("expected task.heartbeat");
+    }
+    expect(parsed.payload.taskIds).toEqual(["workflow-task-1", "workflow-task-2"]);
+  });
 });

@@ -5,6 +5,7 @@ import {
   findActiveClaudeWorkflowRunIndex,
   formatWorkflowModelName,
   inferClaudeWorkflowModelProvider,
+  isClaudeWorkflowDelegationInFlight,
   parseClaudeWorkflowDefinition,
 } from "./claude-workflows";
 
@@ -53,6 +54,29 @@ describe("formatWorkflowModelName", () => {
     expect(formatWorkflowModelName("claude-sonnet-5")).toBe("Sonnet 5");
     expect(formatWorkflowModelName("openai/gpt-5.6-sol")).toBe("GPT-5.6-Sol");
     expect(formatWorkflowModelName(undefined, "Runner")).toBe("Runner");
+  });
+});
+
+describe("isClaudeWorkflowDelegationInFlight", () => {
+  it("only reports a Claude-to-Codex handoff as running while the owning agent is active", () => {
+    expect(
+      isClaudeWorkflowDelegationInFlight({
+        delegationState: "requested",
+        status: "running",
+      }),
+    ).toBe(true);
+    expect(
+      isClaudeWorkflowDelegationInFlight({
+        delegationState: "requested",
+        status: "stopped",
+      }),
+    ).toBe(false);
+    expect(
+      isClaudeWorkflowDelegationInFlight({
+        delegationState: "result_received",
+        status: "completed",
+      }),
+    ).toBe(false);
   });
 });
 

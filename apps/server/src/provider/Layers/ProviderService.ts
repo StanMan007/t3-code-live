@@ -200,6 +200,38 @@ const correlateRuntimeEventWithInstance = (
   return { ...event, providerInstanceId: source.instanceId };
 };
 
+function runtimePayloadRecord(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function readPersistedBackgroundTaskIds(value: unknown): Set<string> {
+  const taskIds = runtimePayloadRecord(value)?.backgroundTaskIds;
+  return new Set(
+    Array.isArray(taskIds)
+      ? taskIds.filter((taskId): taskId is string => typeof taskId === "string")
+      : [],
+  );
+}
+
+function readPersistedBackgroundTaskLastProgressAt(value: unknown): string | undefined {
+  const lastProgressAt = runtimePayloadRecord(value)?.backgroundTaskLastProgressAt;
+  return typeof lastProgressAt === "string" ? lastProgressAt : undefined;
+}
+
+function sameStringSet(left: ReadonlySet<string>, right: ReadonlySet<string>): boolean {
+  return left.size === right.size && [...left].every((value) => right.has(value));
+}
+
+const TERMINAL_BACKGROUND_TASK_STATUSES = new Set([
+  "completed",
+  "failed",
+  "killed",
+  "paused",
+  "stopped",
+]);
+
 const makeProviderService = Effect.fn("makeProviderService")(function* (
   options?: ProviderServiceLiveOptions,
 ) {
@@ -282,6 +314,90 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       });
     });
 
+  const persistBackgroundTaskLease = Effect.fn("persistBackgroundTaskLease")(function* (
+    source: {
+      readonly instanceId: ProviderInstanceId;
+      readonly provider: ProviderDriverKind;
+    },
+    event: ProviderRuntimeEvent,
+  ) {
+    const existing = Option.getOrUndefined(yield* directory.getBinding(event.threadId));
+    const activeTaskIds = readPersistedBackgroundTaskIds(existing?.runtimePayload);
+    const previousTaskIds = new Set(activeTaskIds);
+    let tracksBackgroundWork = true;
+    let recordsProgress = false;
+
+    switch (event.type) {
+      case "task.started":
+      case "task.progress":
+        activeTaskIds.add(event.payload.taskId);
+        recordsProgress = true;
+        break;
+      case "task.updated": {
+        const status = event.payload.patch.status;
+        if (typeof status === "string" && TERMINAL_BACKGROUND_TASK_STATUSES.has(status)) {
+          activeTaskIds.delete(event.payload.taskId);
+        } else if (status === "running") {
+          activeTaskIds.add(event.payload.taskId);
+        }
+        recordsProgress = true;
+        break;
+      }
+      case "task.completed":
+        activeTaskIds.delete(event.payload.taskId);
+        recordsProgress = true;
+        break;
+      case "task.roster": {
+        activeTaskIds.clear();
+        for (const task of event.payload.tasks) {
+          const taskId =
+            typeof task.task_id === "string"
+              ? task.task_id
+              : typeof task.taskId === "string"
+                ? task.taskId
+                : undefined;
+          if (taskId) activeTaskIds.add(taskId);
+        }
+        recordsProgress = !sameStringSet(previousTaskIds, activeTaskIds);
+        break;
+      }
+      case "task.heartbeat":
+        activeTaskIds.clear();
+        for (const taskId of event.payload.taskIds) activeTaskIds.add(taskId);
+        break;
+      case "session.exited":
+        activeTaskIds.clear();
+        recordsProgress = previousTaskIds.size > 0;
+        break;
+      default:
+        tracksBackgroundWork = false;
+        break;
+    }
+
+    if (!tracksBackgroundWork) return;
+
+    const lastProgressAt = recordsProgress
+      ? event.createdAt
+      : readPersistedBackgroundTaskLastProgressAt(existing?.runtimePayload);
+    yield* directory.upsert({
+      threadId: event.threadId,
+      provider: source.provider,
+      providerInstanceId: source.instanceId,
+      runtimePayload: {
+        backgroundTaskIds: [...activeTaskIds].sort(),
+        backgroundTaskLeaseState: activeTaskIds.size > 0 ? "active" : "idle",
+        backgroundTaskHeartbeatAt: event.createdAt,
+        ...(lastProgressAt ? { backgroundTaskLastProgressAt: lastProgressAt } : {}),
+        ...(event.type !== "task.heartbeat"
+          ? {
+              lastRuntimeEvent: event.type,
+              lastRuntimeEventAt: event.createdAt,
+            }
+          : {}),
+      },
+    });
+  });
+
   const processRuntimeEvent = (
     source: {
       readonly instanceId: ProviderInstanceId;
@@ -290,6 +406,18 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     event: ProviderRuntimeEvent,
   ): Effect.Effect<void> =>
     Effect.sync(() => correlateRuntimeEventWithInstance(source, event)).pipe(
+      Effect.tap((canonicalEvent) =>
+        persistBackgroundTaskLease(source, canonicalEvent).pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("provider.background-task-lease.persist-failed", {
+              threadId: canonicalEvent.threadId,
+              provider: canonicalEvent.provider,
+              eventType: canonicalEvent.type,
+              cause,
+            }),
+          ),
+        ),
+      ),
       Effect.flatMap((canonicalEvent) =>
         increment(providerRuntimeEventsTotal, {
           provider: canonicalEvent.provider,

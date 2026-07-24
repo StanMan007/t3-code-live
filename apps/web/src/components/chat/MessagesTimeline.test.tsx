@@ -245,6 +245,7 @@ describe("MessagesTimeline", () => {
     const markup = renderToStaticMarkup(
       <MessagesTimeline
         {...buildProps()}
+        showChangedFiles
         latestTurn={{
           turnId,
           state: "completed",

@@ -20,6 +20,7 @@ import {
   findActiveClaudeWorkflowRunIndex,
   formatWorkflowModelName,
   inferClaudeWorkflowModelProvider,
+  isClaudeWorkflowDelegationInFlight,
   type ClaudeWorkflowAgent,
   type ClaudeWorkflowPhase,
   type ClaudeWorkflowRun,
@@ -423,7 +424,7 @@ function DelegationFlow(props: {
   const delegatedModel = formatWorkflowModelName(props.agent.delegatedModel, "GPT-5.6-Sol");
   const parentModel = formatWorkflowModelName(props.parentModel, "parent thread");
   const resultReceived = props.agent.delegationState === "result_received";
-  const resultRequested = props.agent.delegationState === "requested";
+  const resultRequested = isClaudeWorkflowDelegationInFlight(props.agent);
 
   return (
     <section className="border-b border-white/[0.055] pb-3">
