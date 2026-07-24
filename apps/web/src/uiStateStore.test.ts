@@ -116,23 +116,23 @@ describe("uiStateStore pure functions", () => {
     );
   });
 
-  it("defaults changed-file turns to collapsed and stores only expanded overrides", () => {
+  it("stores explicit changed-file expansion choices", () => {
     const threadId = ThreadId.make("thread-1");
-    const initialState = makeUiState();
-    expect(setThreadChangedFilesExpanded(initialState, threadId, "turn-1", false)).toBe(
-      initialState,
-    );
-    const expanded = setThreadChangedFilesExpanded(initialState, threadId, "turn-1", true);
+    const collapsed = setThreadChangedFilesExpanded(makeUiState(), threadId, "turn-1", false);
 
-    expect(expanded.threadChangedFilesExpandedById).toEqual({
+    expect(collapsed.threadChangedFilesExpandedById).toEqual({
+      [threadId]: {
+        "turn-1": false,
+      },
+    });
+    expect(
+      setThreadChangedFilesExpanded(collapsed, threadId, "turn-1", true)
+        .threadChangedFilesExpandedById,
+    ).toEqual({
       [threadId]: {
         "turn-1": true,
       },
     });
-    expect(
-      setThreadChangedFilesExpanded(expanded, threadId, "turn-1", false)
-        .threadChangedFilesExpandedById,
-    ).toEqual({});
   });
 
   it("stores the endpoint preference by stable key", () => {
@@ -159,6 +159,7 @@ describe("parsePersistedState", () => {
         invalid: "not-a-date",
       },
       defaultAdvertisedEndpointKey: "desktop-core:lan:http",
+      threadChangedFilesExpansionVersion: 1,
       threadChangedFilesExpandedById: {
         "environment:thread-1": {
           "turn-1": false,
@@ -178,10 +179,23 @@ describe("parsePersistedState", () => {
       defaultAdvertisedEndpointKey: "desktop-core:lan:http",
       threadChangedFilesExpandedById: {
         "environment:thread-1": {
+          "turn-1": false,
           "turn-2": true,
         },
       },
     });
+  });
+
+  it("ignores changed-file expansion values saved with legacy folder semantics", () => {
+    const parsed = parsePersistedState({
+      threadChangedFilesExpandedById: {
+        "environment:thread-1": {
+          "turn-1": false,
+        },
+      },
+    });
+
+    expect(parsed.threadChangedFilesExpandedById).toEqual({});
   });
 
   it("migrates legacy CWD project preferences into local alias keys", () => {
@@ -282,19 +296,16 @@ describe("uiStateStore persistence", () => {
         "environment:thread-1": "2026-02-25T12:35:00.000Z",
       },
       defaultAdvertisedEndpointKey: "desktop-core:lan:http",
+      threadChangedFilesExpansionVersion: 1,
       threadChangedFilesExpandedById: {
         "environment:thread-1": {
+          "turn-1": false,
           "turn-2": true,
         },
       },
     });
     expect(parsePersistedState(persisted)).toEqual({
       ...state,
-      threadChangedFilesExpandedById: {
-        "environment:thread-1": {
-          "turn-2": true,
-        },
-      },
     });
   });
 
