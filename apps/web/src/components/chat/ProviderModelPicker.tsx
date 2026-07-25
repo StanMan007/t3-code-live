@@ -37,6 +37,7 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
   compactProviderLabel?: boolean;
   secondaryLabel?: string | null;
   showProviderIcon?: boolean;
+  showInstanceBadge?: boolean;
   popupAlign?: "start" | "center" | "end";
   compact?: boolean;
   disabled?: boolean;
@@ -78,7 +79,8 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
   const duplicateDriverCount = props.instanceEntries.filter(
     (entry) => activeEntry !== null && entry.driverKind === activeEntry.driverKind,
   ).length;
-  const showInstanceBadge = Boolean(activeEntry?.accentColor) || duplicateDriverCount > 1;
+  const showInstanceBadge =
+    props.showInstanceBadge ?? (Boolean(activeEntry?.accentColor) || duplicateDriverCount > 1);
 
   const setIsMenuOpen = (open: boolean) => {
     props.onOpenChange?.(open);

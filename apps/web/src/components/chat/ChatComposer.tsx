@@ -66,6 +66,7 @@ import { type ElementContextDraft } from "../../lib/elementContext";
 import { ComposerPendingElementContexts } from "./ComposerPendingElementContexts";
 import { ComposerPendingReviewComments } from "./ComposerPendingReviewComments";
 import { ComposerPreviewAnnotationCards } from "./ComposerPreviewAnnotationCards";
+import { filterCompatibleAccountEntries } from "./composerAccountRouting";
 import {
   shouldUseCompactComposerPrimaryActions,
   shouldUseCompactComposerFooter,
@@ -80,6 +81,7 @@ import { ComposerPendingApprovalPanel } from "./ComposerPendingApprovalPanel";
 import { ComposerPendingUserInputPanel } from "./ComposerPendingUserInputPanel";
 import { ComposerPlanFollowUpBanner } from "./ComposerPlanFollowUpBanner";
 import { LiveThreadControl } from "./LiveThreadControl";
+import { ProviderInstanceIcon } from "./ProviderInstanceIcon";
 import { resolveComposerMenuActiveItemId } from "./composerMenuHighlight";
 import { searchSlashCommandItems } from "./composerSlashCommandSearch";
 import {
@@ -150,7 +152,15 @@ function ComposerCommandMenuLayer(props: { anchor: HTMLElement | null; children:
   );
 }
 import { Button } from "../ui/button";
-import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
+import {
+  Select,
+  SelectGroup,
+  SelectGroupLabel,
+  SelectItem,
+  SelectPopup,
+  SelectTrigger,
+  SelectValue,
+} from "../ui/select";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { toastManager } from "../ui/toast";
 import {
@@ -167,6 +177,7 @@ import { getProviderDisplayName, getProviderInteractionModeToggle } from "../../
 import {
   applyProviderInstanceSettings,
   deriveProviderInstanceEntries,
+  isProviderInstancePickerReady,
   NO_PROVIDER_MODEL_SELECTION,
   resolveProviderDriverKindForInstanceSelection,
   resolveSelectableProviderInstanceEntry,
@@ -309,6 +320,116 @@ const ComposerRuntimeModeControl = memo(function ComposerRuntimeModeControl(prop
         </SelectPopup>
       </Select>
       <TooltipPopup side="top">{runtimeModeOption.description}</TooltipPopup>
+    </Tooltip>
+  );
+});
+
+function accountEmailLabel(displayName: string): string {
+  return displayName.includes(" · ")
+    ? (displayName.split(" · ").at(-1) ?? displayName)
+    : displayName;
+}
+
+const ComposerAccountControl = memo(function ComposerAccountControl(props: {
+  activeInstanceId: ProviderInstanceId;
+  currentModel: string;
+  instanceEntries: ReadonlyArray<ProviderInstanceEntry>;
+  lockedProvider: ProviderDriverKind | null;
+  modelOptionsByInstance: ReadonlyMap<ProviderInstanceId, ReadonlyArray<AppModelOption>>;
+  onInstanceModelChange: (instanceId: ProviderInstanceId, model: string) => void;
+}) {
+  const activeEntry =
+    props.instanceEntries.find((entry) => entry.instanceId === props.activeInstanceId) ?? null;
+  const taskIsLocked = props.lockedProvider !== null;
+
+  const handleAccountChange = (instanceId: string | null) => {
+    if (!instanceId || instanceId === props.activeInstanceId || taskIsLocked) {
+      return;
+    }
+    const nextInstanceId = ProviderInstanceId.make(instanceId);
+    const nextModels = props.modelOptionsByInstance.get(nextInstanceId) ?? [];
+    const nextModel =
+      nextModels.find((model) => model.slug === props.currentModel)?.slug ?? nextModels[0]?.slug;
+    if (nextModel) {
+      props.onInstanceModelChange(nextInstanceId, nextModel);
+    }
+  };
+
+  if (!activeEntry) {
+    return null;
+  }
+
+  const compatibleEntries = filterCompatibleAccountEntries(
+    props.instanceEntries,
+    activeEntry.driverKind,
+  );
+  const providerLabel = activeEntry.driverKind === "codex" ? "OpenAI" : "Claude";
+  const triggerLabel = accountEmailLabel(activeEntry.displayName);
+  const tooltipText = taskIsLocked
+    ? `${activeEntry.displayName} is locked to this task`
+    : `Account: ${activeEntry.displayName}`;
+
+  return (
+    <Tooltip>
+      <Select<string> value={props.activeInstanceId} onValueChange={handleAccountChange}>
+        <TooltipTrigger
+          render={
+            <SelectTrigger
+              variant="ghost"
+              size="sm"
+              aria-label="Account for this task"
+              className="max-w-52 shrink-0 px-1.5 text-muted-foreground/70 hover:text-foreground/80 sm:px-2"
+            />
+          }
+        >
+          <SelectValue>
+            <span className="truncate">{triggerLabel}</span>
+          </SelectValue>
+          {taskIsLocked ? <LockIcon className="size-3 shrink-0 opacity-55" /> : null}
+        </TooltipTrigger>
+        <SelectPopup alignItemWithTrigger={false} matchTriggerWidth={false} className="min-w-72">
+          <SelectGroup>
+            <SelectGroupLabel>
+              <span className="flex items-center gap-2">
+                <ProviderInstanceIcon
+                  driverKind={activeEntry.driverKind}
+                  displayName={providerLabel}
+                  className="size-4"
+                  iconClassName="size-4"
+                />
+                {providerLabel}
+              </span>
+            </SelectGroupLabel>
+            {compatibleEntries.map((entry) => {
+              const isCurrent = entry.instanceId === props.activeInstanceId;
+              const hasModels =
+                (props.modelOptionsByInstance.get(entry.instanceId)?.length ?? 0) > 0;
+              const unavailable = !isProviderInstancePickerReady(entry) || !hasModels;
+              const locked = taskIsLocked && !isCurrent;
+              return (
+                <SelectItem
+                  key={entry.instanceId}
+                  value={entry.instanceId}
+                  disabled={unavailable || locked}
+                  className="py-1.5"
+                >
+                  <span className="flex min-w-0 flex-1 items-center gap-3">
+                    <span className="min-w-0 flex-1 truncate">
+                      {accountEmailLabel(entry.displayName)}
+                    </span>
+                    {locked ? (
+                      <span className="shrink-0 text-xs text-muted-foreground">New task</span>
+                    ) : isCurrent ? (
+                      <span className="shrink-0 text-xs text-muted-foreground">Current</span>
+                    ) : null}
+                  </span>
+                </SelectItem>
+              );
+            })}
+          </SelectGroup>
+        </SelectPopup>
+      </Select>
+      <TooltipPopup side="top">{tooltipText}</TooltipPopup>
     </Tooltip>
   );
 });
@@ -2600,33 +2721,44 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     No provider available
                   </Button>
                 ) : (
-                  <ProviderModelPicker
-                    compact
-                    compactProviderLabel
-                    activeInstanceId={selectedInstanceId}
-                    model={selectedModelForPickerWithCustomFallback}
-                    lockedProvider={lockedProvider}
-                    lockedContinuationGroupKey={lockedContinuationGroupKey}
-                    instanceEntries={providerInstanceEntries}
-                    keybindings={keybindings}
-                    modelOptionsByInstance={modelOptionsByInstance}
-                    secondaryLabel={composerProviderState.promptEffortLabel}
-                    popupAlign="start"
-                    triggerClassName="justify-start px-1.5 sm:px-2"
-                    terminalOpen={terminalOpen}
-                    open={isComposerModelPickerOpen}
-                    {...(composerProviderState.modelPickerIconClassName
-                      ? {
-                          activeProviderIconClassName:
-                            composerProviderState.modelPickerIconClassName,
-                        }
-                      : {})}
-                    onOpenChange={(open) => {
-                      setIsComposerModelPickerOpen(open);
-                    }}
-                    getModelDisabledReason={getModelDisabledReason}
-                    onInstanceModelChange={onProviderModelSelect}
-                  />
+                  <>
+                    <ProviderModelPicker
+                      compact
+                      compactProviderLabel
+                      showInstanceBadge={false}
+                      activeInstanceId={selectedInstanceId}
+                      model={selectedModelForPickerWithCustomFallback}
+                      lockedProvider={lockedProvider}
+                      lockedContinuationGroupKey={lockedContinuationGroupKey}
+                      instanceEntries={providerInstanceEntries}
+                      keybindings={keybindings}
+                      modelOptionsByInstance={modelOptionsByInstance}
+                      secondaryLabel={composerProviderState.promptEffortLabel}
+                      popupAlign="start"
+                      triggerClassName="justify-start px-1.5 sm:px-2"
+                      terminalOpen={terminalOpen}
+                      open={isComposerModelPickerOpen}
+                      {...(composerProviderState.modelPickerIconClassName
+                        ? {
+                            activeProviderIconClassName:
+                              composerProviderState.modelPickerIconClassName,
+                          }
+                        : {})}
+                      onOpenChange={(open) => {
+                        setIsComposerModelPickerOpen(open);
+                      }}
+                      getModelDisabledReason={getModelDisabledReason}
+                      onInstanceModelChange={onProviderModelSelect}
+                    />
+                    <ComposerAccountControl
+                      activeInstanceId={selectedInstanceId}
+                      currentModel={selectedModelForPickerWithCustomFallback}
+                      instanceEntries={providerInstanceEntries}
+                      lockedProvider={lockedProvider}
+                      modelOptionsByInstance={modelOptionsByInstance}
+                      onInstanceModelChange={onProviderModelSelect}
+                    />
+                  </>
                 )}
               </div>
 

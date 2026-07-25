@@ -778,6 +778,34 @@ const runClaudeCommand = Effect.fn("runClaudeCommand")(function* (
   return yield* spawnAndCollect(claudeSettings.binaryPath, command);
 });
 
+interface ClaudeAuthStatusProbe {
+  readonly loggedIn: boolean;
+  readonly authMethod?: string;
+  readonly apiProvider?: string;
+  readonly email?: string;
+  readonly subscriptionType?: string;
+}
+
+export function parseClaudeAuthStatus(output: string): ClaudeAuthStatusProbe | undefined {
+  try {
+    const parsed: unknown = JSON.parse(output);
+    if (parsed === null || typeof parsed !== "object") return undefined;
+    const record = parsed as Record<string, unknown>;
+    if (typeof record.loggedIn !== "boolean") return undefined;
+    return {
+      loggedIn: record.loggedIn,
+      ...(typeof record.authMethod === "string" ? { authMethod: record.authMethod } : {}),
+      ...(typeof record.apiProvider === "string" ? { apiProvider: record.apiProvider } : {}),
+      ...(typeof record.email === "string" ? { email: record.email } : {}),
+      ...(typeof record.subscriptionType === "string"
+        ? { subscriptionType: record.subscriptionType }
+        : {}),
+    };
+  } catch {
+    return undefined;
+  }
+}
+
 export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(function* (
   claudeSettings: ClaudeSettings,
   resolveCapabilities?: (
@@ -900,11 +928,44 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
   const capabilities = resolveCapabilities
     ? yield* resolveCapabilities(claudeSettings).pipe(Effect.orElseSucceed(() => undefined))
     : undefined;
+  const authProbe = yield* runClaudeCommand(
+    claudeSettings,
+    ["auth", "status"],
+    resolvedEnvironment,
+  ).pipe(Effect.timeoutOption(DEFAULT_TIMEOUT_MS), Effect.result);
+  const authStatus =
+    Result.isSuccess(authProbe) && Option.isSome(authProbe.success)
+      ? parseClaudeAuthStatus(authProbe.success.value.stdout)
+      : undefined;
   const skills = yield* discoverClaudeSkills(claudeSettings, cwd, resolvedEnvironment);
   const slashCommands = capabilities?.slashCommands ?? [];
   const dedupedSlashCommands = dedupeSlashCommands(slashCommands);
+  const normalizedTokenSource = capabilities?.tokenSource?.trim().toUpperCase();
+  const hasExternalAuthentication =
+    capabilities !== undefined &&
+    ((capabilities.apiProvider !== undefined && capabilities.apiProvider !== "firstParty") ||
+      normalizedTokenSource === "ANTHROPIC_API_KEY" ||
+      normalizedTokenSource === "ANTHROPIC_AUTH_TOKEN");
 
-  if (!capabilities) {
+  if (authStatus?.loggedIn === false && !hasExternalAuthentication) {
+    return buildServerProvider({
+      presentation: CLAUDE_PRESENTATION,
+      enabled: claudeSettings.enabled,
+      checkedAt,
+      models,
+      slashCommands: dedupedSlashCommands,
+      skills,
+      probe: {
+        installed: true,
+        version: parsedVersion,
+        status: "warning",
+        auth: { status: "unauthenticated" },
+        message: "Claude CLI is not authenticated. Sign in and refresh this provider.",
+      },
+    });
+  }
+
+  if (!capabilities && authStatus?.loggedIn !== true) {
     return buildServerProvider({
       presentation: CLAUDE_PRESENTATION,
       enabled: claudeSettings.enabled,
@@ -924,9 +985,9 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
 
   const authMetadata =
     claudeAuthMetadata({
-      subscriptionType: capabilities.subscriptionType,
-      authMethod: capabilities.tokenSource,
-    }) ?? apiProviderAuthMetadata(capabilities.apiProvider);
+      subscriptionType: authStatus?.subscriptionType ?? capabilities?.subscriptionType,
+      authMethod: capabilities?.tokenSource ?? authStatus?.authMethod,
+    }) ?? apiProviderAuthMetadata(capabilities?.apiProvider ?? authStatus?.apiProvider);
   return buildServerProvider({
     presentation: CLAUDE_PRESENTATION,
     enabled: claudeSettings.enabled,
@@ -940,7 +1001,9 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
       status: "ready",
       auth: {
         status: "authenticated",
-        ...(capabilities.email ? { email: capabilities.email } : {}),
+        ...(authStatus?.email || capabilities?.email
+          ? { email: authStatus?.email ?? capabilities?.email }
+          : {}),
         ...(authMetadata ? authMetadata : {}),
       },
       ...(versionUpgradeMessage ? { message: versionUpgradeMessage } : {}),

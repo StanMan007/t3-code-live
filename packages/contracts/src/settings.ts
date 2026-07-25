@@ -219,6 +219,18 @@ export const CodexSettings = makeProviderSettingsSchema(
         },
       }),
     ),
+    modelPrefix: TrimmedString.pipe(
+      Schema.withDecodingDefault(Effect.succeed("")),
+      Schema.annotateKey({
+        title: "Model route prefix",
+        description:
+          "Optional CLIProxy account prefix prepended to models selected through this instance.",
+        providerSettingsForm: {
+          placeholder: "e.g. dossierx",
+          clearWhenEmpty: "omit",
+        },
+      }),
+    ),
     launchArgs: TrimmedString.pipe(
       Schema.withDecodingDefault(Effect.succeed("")),
       Schema.annotateKey({
@@ -232,7 +244,7 @@ export const CodexSettings = makeProviderSettingsSchema(
     ),
   },
   {
-    order: ["binaryPath", "homePath", "shadowHomePath", "launchArgs"],
+    order: ["binaryPath", "homePath", "shadowHomePath", "modelPrefix", "launchArgs"],
   },
 );
 export type CodexSettings = typeof CodexSettings.Type;
@@ -259,6 +271,18 @@ export const ClaudeSettings = makeProviderSettingsSchema(
         providerSettingsForm: { placeholder: "~/.claude", clearWhenEmpty: "omit" },
       }),
     ),
+    modelPrefix: TrimmedString.pipe(
+      Schema.withDecodingDefault(Effect.succeed("")),
+      Schema.annotateKey({
+        title: "Model route prefix",
+        description:
+          "Optional CLIProxy account prefix prepended to models selected through this instance.",
+        providerSettingsForm: {
+          placeholder: "e.g. dossierx",
+          clearWhenEmpty: "omit",
+        },
+      }),
+    ),
     customModels: Schema.Array(Schema.String).pipe(
       Schema.withDecodingDefault(Effect.succeed([])),
       Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
@@ -276,7 +300,7 @@ export const ClaudeSettings = makeProviderSettingsSchema(
     ),
   },
   {
-    order: ["binaryPath", "homePath", "launchArgs"],
+    order: ["binaryPath", "homePath", "modelPrefix", "launchArgs"],
   },
 );
 export type ClaudeSettings = typeof ClaudeSettings.Type;

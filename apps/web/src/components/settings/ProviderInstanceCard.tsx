@@ -6,7 +6,9 @@ import {
   CopyIcon,
   DownloadIcon,
   LoaderIcon,
+  LogInIcon,
   PlusIcon,
+  RefreshCwIcon,
   Trash2Icon,
   XIcon,
 } from "lucide-react";
@@ -349,6 +351,10 @@ interface ProviderInstanceCardProps {
   readonly onModelOrderChange: (next: ReadonlyArray<string>) => void;
   readonly onRunUpdate?: (() => void) | undefined;
   readonly isUpdating?: boolean | undefined;
+  readonly onRefresh?: (() => void) | undefined;
+  readonly isRefreshing?: boolean | undefined;
+  readonly onLogin?: (() => void) | undefined;
+  readonly isLoggingIn?: boolean | undefined;
 }
 
 /**
@@ -393,6 +399,10 @@ export function ProviderInstanceCard({
   onModelOrderChange,
   onRunUpdate,
   isUpdating = false,
+  onRefresh,
+  isRefreshing = false,
+  onLogin,
+  isLoggingIn = false,
 }: ProviderInstanceCardProps) {
   const enabled = instance.enabled ?? true;
   // The server-reported status wins when present; otherwise fall back to
@@ -442,6 +452,9 @@ export function ProviderInstanceCard({
   const driverKind: ProviderDriverKind | null = isProviderDriverKind(instance.driver)
     ? instance.driver
     : null;
+  const supportsNativeLogin = driverKind === "claudeAgent" || driverKind === "codex";
+  const showNativeLogin = supportsNativeLogin && enabled && liveProvider?.installed !== false;
+  const loginLabel = liveProvider?.auth.status === "authenticated" ? "Re-login" : "Sign in";
 
   const customModels = readConfigStringArray(instance.config, "customModels");
   // Server-returned models may lag behind settings writes. Treat probe
@@ -707,6 +720,44 @@ export function ProviderInstanceCard({
             {authRowNode}
           </div>
           <div className="flex w-full shrink-0 items-center gap-2 sm:w-auto sm:justify-end">
+            {onRefresh ? (
+              <Tooltip>
+                <TooltipTrigger
+                  render={
+                    <Button
+                      type="button"
+                      size="icon-xs"
+                      variant="ghost"
+                      className="size-7 rounded-md text-muted-foreground hover:text-foreground"
+                      disabled={isRefreshing}
+                      onClick={onRefresh}
+                      aria-label={`Refresh ${displayName} authentication status`}
+                    >
+                      <RefreshCwIcon className={cn("size-3.5", isRefreshing && "animate-spin")} />
+                    </Button>
+                  }
+                />
+                <TooltipPopup side="top">Refresh authentication status</TooltipPopup>
+              </Tooltip>
+            ) : null}
+            {showNativeLogin && onLogin ? (
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                className="h-7 gap-1.5 px-2.5 text-xs"
+                disabled={isLoggingIn}
+                onClick={onLogin}
+                aria-label={`${loginLabel} ${displayName}`}
+              >
+                {isLoggingIn ? (
+                  <LoaderIcon className="size-3.5 animate-spin" />
+                ) : (
+                  <LogInIcon className="size-3.5" />
+                )}
+                {isLoggingIn ? "Opening" : loginLabel}
+              </Button>
+            ) : null}
             <Button
               size="sm"
               variant="ghost"

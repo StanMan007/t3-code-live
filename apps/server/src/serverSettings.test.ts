@@ -179,6 +179,7 @@ it.layer(NodeServices.layer)("server settings", (it) => {
         binaryPath: "/opt/homebrew/bin/codex",
         homePath: "/Users/julius/.codex",
         shadowHomePath: "",
+        modelPrefix: "",
         launchArgs: "",
         customModels: [],
       });
@@ -186,6 +187,7 @@ it.layer(NodeServices.layer)("server settings", (it) => {
         enabled: true,
         binaryPath: "/usr/local/bin/claude",
         homePath: "",
+        modelPrefix: "",
         customModels: ["claude-custom"],
         launchArgs: "",
       });
@@ -421,6 +423,7 @@ it.layer(NodeServices.layer)("server settings", (it) => {
         binaryPath: "/opt/homebrew/bin/codex",
         homePath: "",
         shadowHomePath: "",
+        modelPrefix: "",
         launchArgs: "",
         customModels: [],
       });
@@ -428,6 +431,7 @@ it.layer(NodeServices.layer)("server settings", (it) => {
         enabled: true,
         binaryPath: "/opt/homebrew/bin/claude",
         homePath: "",
+        modelPrefix: "",
         customModels: [],
         launchArgs: "",
       });

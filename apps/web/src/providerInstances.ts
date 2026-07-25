@@ -47,6 +47,11 @@ export interface ProviderInstanceEntry {
   readonly instanceId: ProviderInstanceId;
   readonly driverKind: ProviderDriverKind;
   readonly displayName: string;
+  /**
+   * Stable account-route identity shared by corresponding provider instances.
+   * Today this comes from the configured CLIProxy model prefix.
+   */
+  readonly accountRouteKey?: string | undefined;
   readonly accentColor?: string | undefined;
   readonly continuationGroupKey?: string | undefined;
   readonly enabled: boolean;
@@ -197,7 +202,13 @@ export function applyProviderInstanceSettings(
   settings: Pick<ServerSettings, "providerInstances" | "providers">,
 ): ReadonlyArray<ProviderInstanceEntry> {
   const legacyProviders = settings.providers as Readonly<
-    Record<string, { readonly enabled?: boolean } | undefined>
+    Record<
+      string,
+      {
+        readonly enabled?: boolean;
+        readonly modelPrefix?: string;
+      } | undefined
+    >
   >;
 
   return entries.map((entry) => {
@@ -207,7 +218,20 @@ export function applyProviderInstanceSettings(
       : entry.isDefault
         ? (legacyProviders[entry.driverKind]?.enabled ?? entry.enabled)
         : false;
-    return enabled === entry.enabled ? entry : { ...entry, enabled };
+    const routeConfig =
+      explicitInstance?.config && typeof explicitInstance.config === "object"
+        ? (explicitInstance.config as { readonly modelPrefix?: unknown })
+        : entry.isDefault
+          ? legacyProviders[entry.driverKind]
+          : undefined;
+    const rawAccountRouteKey = routeConfig?.modelPrefix;
+    const accountRouteKey =
+      typeof rawAccountRouteKey === "string"
+        ? rawAccountRouteKey.trim().replace(/\/+$/u, "") || undefined
+        : undefined;
+    return enabled === entry.enabled && accountRouteKey === entry.accountRouteKey
+      ? entry
+      : { ...entry, enabled, accountRouteKey };
   });
 }
 

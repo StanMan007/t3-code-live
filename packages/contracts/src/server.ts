@@ -562,6 +562,30 @@ export const ServerProviderUpdateInput = Schema.Struct({
 });
 export type ServerProviderUpdateInput = typeof ServerProviderUpdateInput.Type;
 
+export const ServerProviderLoginInput = Schema.Struct({
+  instanceId: ProviderInstanceId,
+});
+export type ServerProviderLoginInput = typeof ServerProviderLoginInput.Type;
+
+export const ServerProviderLoginResult = Schema.Struct({
+  instanceId: ProviderInstanceId,
+  started: Schema.Literal(true),
+});
+export type ServerProviderLoginResult = typeof ServerProviderLoginResult.Type;
+
+export class ServerProviderLoginError extends Schema.TaggedErrorClass<ServerProviderLoginError>()(
+  "ServerProviderLoginError",
+  {
+    instanceId: ProviderInstanceId,
+    reason: TrimmedNonEmptyString,
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {
+  override get message(): string {
+    return `Provider login failed for ${this.instanceId}: ${this.reason}`;
+  }
+}
+
 export class ServerProviderUpdateError extends Schema.TaggedErrorClass<ServerProviderUpdateError>()(
   "ServerProviderUpdateError",
   {

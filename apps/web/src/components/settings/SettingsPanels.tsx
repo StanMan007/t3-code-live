@@ -1136,10 +1136,19 @@ export function ProviderSettingsPanel() {
   const refreshServerProviders = useAtomCommand(serverEnvironment.refreshProviders, {
     reportFailure: false,
   });
+  const loginProvider = useAtomCommand(serverEnvironment.loginProvider, {
+    reportFailure: false,
+  });
   const updateProvider = useAtomCommand(serverEnvironment.updateProvider, {
     reportFailure: false,
   });
   const [isRefreshingProviders, setIsRefreshingProviders] = useState(false);
+  const [refreshingProviderIds, setRefreshingProviderIds] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
+  const [loggingInProviderIds, setLoggingInProviderIds] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
   const [isAddInstanceDialogOpen, setIsAddInstanceDialogOpen] = useState(false);
   const [updatingProviderDrivers, setUpdatingProviderDrivers] = useState<
     ReadonlySet<ProviderDriverKind>
@@ -1198,6 +1207,70 @@ export function ProviderSettingsPanel() {
       }
     })();
   }, [primaryEnvironment, refreshServerProviders]);
+
+  const refreshProvider = useCallback(
+    async (instanceId: ProviderInstanceId) => {
+      if (!primaryEnvironment || refreshingProviderIds.has(instanceId)) return;
+      setRefreshingProviderIds((previous) => new Set(previous).add(instanceId));
+      const result = await refreshServerProviders({
+        environmentId: primaryEnvironment.environmentId,
+        input: { instanceId },
+      });
+      setRefreshingProviderIds((previous) => {
+        const next = new Set(previous);
+        next.delete(instanceId);
+        return next;
+      });
+      if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+        const error = squashAtomCommandFailure(result);
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Could not refresh provider status",
+            description:
+              error instanceof Error ? error.message : "The authentication check failed.",
+          }),
+        );
+      }
+    },
+    [primaryEnvironment, refreshServerProviders, refreshingProviderIds],
+  );
+
+  const startProviderLogin = useCallback(
+    async (instanceId: ProviderInstanceId, displayName: string) => {
+      if (!primaryEnvironment || loggingInProviderIds.has(instanceId)) return;
+      setLoggingInProviderIds((previous) => new Set(previous).add(instanceId));
+      const result = await loginProvider({
+        environmentId: primaryEnvironment.environmentId,
+        input: { instanceId },
+      });
+      setLoggingInProviderIds((previous) => {
+        const next = new Set(previous);
+        next.delete(instanceId);
+        return next;
+      });
+      if (result._tag === "Failure") {
+        if (!isAtomCommandInterrupted(result)) {
+          const error = squashAtomCommandFailure(result);
+          toastManager.add(
+            stackedThreadToast({
+              type: "error",
+              title: `Could not open ${displayName} login`,
+              description:
+                error instanceof Error ? error.message : "The native login flow could not start.",
+            }),
+          );
+        }
+        return;
+      }
+      toastManager.add({
+        type: "success",
+        title: `${displayName} login opened`,
+        description: "Complete sign-in in your browser, then refresh this provider.",
+      });
+    },
+    [loggingInProviderIds, loginProvider, primaryEnvironment],
+  );
 
   const runProviderUpdate = useCallback(
     async (candidate: ProviderUpdateCandidate) => {
@@ -1496,6 +1569,7 @@ export function ProviderSettingsPanel() {
             favorite.provider === row.instanceId ? Result.succeed(favorite.model) : Result.failVoid,
           );
           const resetLabel = driverOption?.label ?? String(row.driver);
+          const rowDisplayName = row.instance.displayName?.trim() || resetLabel;
           const headerAction =
             row.isDefault && row.isDirty ? (
               <SettingResetButton
@@ -1561,6 +1635,10 @@ export function ProviderSettingsPanel() {
                   : undefined
               }
               isUpdating={showInlineUpdateButton ? isDriverUpdateRunning : undefined}
+              onRefresh={() => void refreshProvider(row.instanceId)}
+              isRefreshing={refreshingProviderIds.has(row.instanceId)}
+              onLogin={() => void startProviderLogin(row.instanceId, rowDisplayName)}
+              isLoggingIn={loggingInProviderIds.has(row.instanceId)}
             />
           );
         })}

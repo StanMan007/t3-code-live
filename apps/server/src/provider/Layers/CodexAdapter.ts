@@ -50,6 +50,7 @@ import {
   type ProviderAdapterError,
 } from "../Errors.ts";
 import { type CodexAdapterShape } from "../Services/CodexAdapter.ts";
+import { applyModelRoutePrefix } from "../Drivers/ModelRoutePrefix.ts";
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import {
@@ -1408,7 +1409,12 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
             : {}),
           runtimeMode: input.runtimeMode,
           ...(input.modelSelection?.instanceId === boundInstanceId
-            ? { model: input.modelSelection.model }
+            ? {
+                model: applyModelRoutePrefix(
+                  codexConfig.modelPrefix ?? "",
+                  input.modelSelection.model,
+                ),
+              }
             : {}),
           ...(serviceTier ? { serviceTier } : {}),
           ...(mcpSession
@@ -1548,7 +1554,12 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
       .sendTurn({
         ...(input.input !== undefined ? { input: input.input } : {}),
         ...(input.modelSelection?.instanceId === boundInstanceId
-          ? { model: input.modelSelection.model }
+          ? {
+              model: applyModelRoutePrefix(
+                codexConfig.modelPrefix ?? "",
+                input.modelSelection.model,
+              ),
+            }
           : {}),
         ...(reasoningEffort
           ? {

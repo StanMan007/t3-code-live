@@ -1074,6 +1074,40 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("routes Claude models through the configured account prefix", () => {
+    const harness = makeHarness({ claudeConfig: { modelPrefix: "dossierx" } });
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        modelSelection: createModelSelection(
+          ProviderInstanceId.make("claudeAgent"),
+          "claude-opus-4-6",
+        ),
+        runtimeMode: "full-access",
+      });
+
+      assert.equal(
+        harness.getLastCreateQueryInput()?.options.model,
+        "dossierx/claude-opus-4-6[1m]",
+      );
+
+      yield* adapter.sendTurn({
+        threadId: THREAD_ID,
+        input: "hello",
+        modelSelection: createModelSelection(
+          ProviderInstanceId.make("claudeAgent"),
+          "claude-sonnet-4-6",
+        ),
+      });
+      assert.deepEqual(harness.query.setModelCalls, ["dossierx/claude-sonnet-4-6"]);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("maps the Claude Opus 4.7 default effort to the SDK-supported max value", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {

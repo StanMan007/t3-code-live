@@ -360,6 +360,47 @@ sessionErrorLayer("CodexAdapterLive session errors", (it) => {
     }),
   );
 
+  it.effect("routes Codex models through the configured account prefix", () => {
+    const runtimeFactory = makeRuntimeFactory();
+    const layer = Layer.effect(
+      CodexAdapter,
+      Effect.gen(function* () {
+        const codexConfig = decodeCodexSettings({ modelPrefix: "dossierx" });
+        return yield* makeCodexAdapter(codexConfig, {
+          makeRuntime: runtimeFactory.factory,
+        });
+      }),
+    ).pipe(
+      Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
+      Layer.provideMerge(ServerSettingsService.layerTest()),
+      Layer.provideMerge(providerSessionDirectoryTestLayer),
+      Layer.provideMerge(NodeServices.layer),
+    );
+
+    return Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("codex"),
+        threadId: asThreadId("prefixed-session"),
+        modelSelection: createModelSelection(ProviderInstanceId.make("codex"), "gpt-5.3-codex"),
+        runtimeMode: "full-access",
+      });
+
+      const runtime = runtimeFactory.lastRuntime;
+      NodeAssert.ok(runtime);
+      NodeAssert.equal(runtime.options.model, "dossierx/gpt-5.3-codex");
+
+      runtime.sendTurnImpl.mockClear();
+      yield* adapter.sendTurn({
+        threadId: asThreadId("prefixed-session"),
+        input: "hello",
+        modelSelection: createModelSelection(ProviderInstanceId.make("codex"), "gpt-5.4"),
+        attachments: [],
+      });
+      NodeAssert.equal(runtime.sendTurnImpl.mock.calls[0]?.[0].model, "dossierx/gpt-5.4");
+    }).pipe(Effect.provide(layer));
+  });
+
   it.effect("passes configured launch args into the session runtime", () => {
     const runtimeFactory = makeRuntimeFactory();
     const layer = Layer.effect(

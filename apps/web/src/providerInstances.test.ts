@@ -116,6 +116,26 @@ describe("applyProviderInstanceSettings", () => {
 
     expect(entry?.enabled).toBe(false);
   });
+
+  it("projects a normalized model prefix as the stable account route key", () => {
+    const entries = deriveProviderInstanceEntries([
+      provider({
+        provider: ProviderDriverKind.make("claudeAgent"),
+        instanceId: "claude_work",
+      }),
+    ]);
+    const [entry] = applyProviderInstanceSettings(entries, {
+      providerInstances: {
+        [ProviderInstanceId.make("claude_work")]: {
+          driver: ProviderDriverKind.make("claudeAgent"),
+          config: { modelPrefix: " work/ " },
+        },
+      },
+      providers: {} as never,
+    });
+
+    expect(entry?.accountRouteKey).toBe("work");
+  });
 });
 
 describe("deriveProviderInstanceEntries", () => {
