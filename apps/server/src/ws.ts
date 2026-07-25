@@ -119,11 +119,6 @@ import * as PairingGrantStore from "./auth/PairingGrantStore.ts";
 import * as SessionStore from "./auth/SessionStore.ts";
 import { failEnvironmentAuthInvalid, failEnvironmentInternal } from "./auth/http.ts";
 import * as RelayClient from "@t3tools/shared/relayClient";
-import {
-  appendRealtimeSpeechBridge,
-  startRealtimeBridge,
-  stopRealtimeBridge,
-} from "./provider/realtimeBridge.ts";
 const isOrchestrationDispatchCommandError = Schema.is(OrchestrationDispatchCommandError);
 
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
@@ -328,9 +323,6 @@ const RPC_REQUIRED_SCOPE = new Map<string, AuthEnvironmentScope>([
   [WS_METHODS.shellOpenInEditor, AuthOrchestrationOperateScope],
   [WS_METHODS.filesystemBrowse, AuthOrchestrationReadScope],
   [WS_METHODS.assetsCreateUrl, AuthOrchestrationReadScope],
-  [WS_METHODS.realtimeStart, AuthOrchestrationOperateScope],
-  [WS_METHODS.realtimeStop, AuthOrchestrationOperateScope],
-  [WS_METHODS.realtimeAppendSpeech, AuthOrchestrationOperateScope],
   [WS_METHODS.liveForkUpdateCheck, AuthOrchestrationReadScope],
   [WS_METHODS.liveForkUpdateMerge, AuthOrchestrationOperateScope],
   [WS_METHODS.liveForkDevStart, AuthOrchestrationOperateScope],
@@ -1768,18 +1760,6 @@ const makeWsRpcLayer = (
             }),
             { "rpc.aggregate": "workspace" },
           ),
-        [WS_METHODS.realtimeStart]: (input) =>
-          observeRpcEffect(WS_METHODS.realtimeStart, startRealtimeBridge(input), {
-            "rpc.aggregate": "realtime",
-          }),
-        [WS_METHODS.realtimeStop]: (input) =>
-          observeRpcEffect(WS_METHODS.realtimeStop, stopRealtimeBridge(input), {
-            "rpc.aggregate": "realtime",
-          }),
-        [WS_METHODS.realtimeAppendSpeech]: (input) =>
-          observeRpcEffect(WS_METHODS.realtimeAppendSpeech, appendRealtimeSpeechBridge(input), {
-            "rpc.aggregate": "realtime",
-          }),
         [WS_METHODS.liveForkUpdateCheck]: (input) =>
           observeRpcEffect(
             WS_METHODS.liveForkUpdateCheck,

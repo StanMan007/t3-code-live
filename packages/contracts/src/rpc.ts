@@ -150,13 +150,6 @@ import {
 } from "./sourceControl.ts";
 import { VcsError } from "./vcs.ts";
 import {
-  RealtimeAppendSpeechInput,
-  RealtimeBridgeError,
-  RealtimeStartInput,
-  RealtimeStartResult,
-  RealtimeStopInput,
-} from "./realtime.ts";
-import {
   LiveForkDevStartResult,
   LiveForkRebuildError,
   LiveForkRebuildResult,
@@ -181,11 +174,6 @@ export const WS_METHODS = {
   // Filesystem methods
   filesystemBrowse: "filesystem.browse",
   assetsCreateUrl: "assets.createUrl",
-
-  // Thread-scoped realtime voice bridge
-  realtimeStart: "realtime.start",
-  realtimeStop: "realtime.stop",
-  realtimeAppendSpeech: "realtime.appendSpeech",
 
   // T3 Code Live source updater
   liveForkUpdateCheck: "liveForkUpdate.check",
@@ -447,24 +435,6 @@ export const WsAssetsCreateUrlRpc = Rpc.make(WS_METHODS.assetsCreateUrl, {
   payload: AssetCreateUrlInput,
   success: AssetCreateUrlResult,
   error: Schema.Union([AssetAccessError, EnvironmentAuthorizationError]),
-});
-
-export const WsRealtimeStartRpc = Rpc.make(WS_METHODS.realtimeStart, {
-  payload: RealtimeStartInput,
-  success: RealtimeStartResult,
-  error: Schema.Union([RealtimeBridgeError, EnvironmentAuthorizationError]),
-});
-
-export const WsRealtimeStopRpc = Rpc.make(WS_METHODS.realtimeStop, {
-  payload: RealtimeStopInput,
-  success: Schema.Void,
-  error: Schema.Union([RealtimeBridgeError, EnvironmentAuthorizationError]),
-});
-
-export const WsRealtimeAppendSpeechRpc = Rpc.make(WS_METHODS.realtimeAppendSpeech, {
-  payload: RealtimeAppendSpeechInput,
-  success: Schema.Void,
-  error: Schema.Union([RealtimeBridgeError, EnvironmentAuthorizationError]),
 });
 
 export const WsLiveForkUpdateCheckRpc = Rpc.make(WS_METHODS.liveForkUpdateCheck, {
@@ -811,9 +781,6 @@ export const WsRpcGroup = RpcGroup.make(
   WsShellOpenInEditorRpc,
   WsFilesystemBrowseRpc,
   WsAssetsCreateUrlRpc,
-  WsRealtimeStartRpc,
-  WsRealtimeStopRpc,
-  WsRealtimeAppendSpeechRpc,
   WsLiveForkUpdateCheckRpc,
   WsLiveForkUpdateMergeRpc,
   WsLiveForkDevStartRpc,

@@ -95,10 +95,6 @@
       "types": "./src/state/review.ts",
       "default": "./src/state/review.ts"
     },
-    "./state/realtime": {
-      "types": "./src/state/realtime.ts",
-      "default": "./src/state/realtime.ts"
-    },
     "./state/live-fork-update": {
       "types": "./src/state/liveForkUpdate.ts",
       "default": "./src/state/liveForkUpdate.ts"

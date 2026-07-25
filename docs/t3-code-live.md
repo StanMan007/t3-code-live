@@ -1,25 +1,13 @@
 # T3 Code Live integration
 
-This fork adds a thread-scoped voice workbench, Claude workflow observability, guarded source updates, and small composer styling changes without replacing T3 Code's core thread model.
+This fork adds Claude workflow observability, guarded source updates, and small composer styling changes without replacing T3 Code's core thread model.
 
-## Ownership boundary
+## Fork boundary
 
-- `LiveThreadControl.tsx` owns browser microphone capture, the WebRTC peer, transcript preview, and the explicit **Send to Codex** action.
-- The realtime RPC contract carries only the authenticated SDP handshake. Audio, transcript events, and follow-up speech stay on the browser-managed WebRTC connection instead of passing through the T3 WebSocket.
-- `realtimeBridge.ts` exchanges the offer against OpenAI's supported Realtime calls endpoint using `gpt-realtime-2.1`. It does not depend on Codex's gated experimental realtime feature or modify normal Codex thread creation.
-- A handoff enters Codex through the existing composer `onSend` callback. No parallel turn runner or shadow thread state is introduced.
-- Electron grants audio-only media permission to the trusted main renderer origin. Preview/browser partitions keep their existing deny-by-default policy.
 - `liveForkFeatures.ts` is the preservation registry for intentional fork behavior. The merge-repair prompt treats those invariants as product requirements while allowing upstream structure to remain the baseline.
-
-## Credential lookup
-
-The backend resolves the Realtime API key without sending it to the renderer. Lookup order is:
-
-1. `T3CODE_LIVE_THREAD_API_KEY`
-2. `OPENAI_API_KEY`
-3. the existing Live Thread macOS Keychain entry (`com.openai.live-thread` / `openai-api`)
-
-This lets the fork reuse the already-configured Live Thread credential while keeping the packaged app independent from the plugin process.
+- The guarded updater and local runtime controls remain thin additions around the upstream checkout.
+- Claude workflow observability stays in the typed provider and orchestration paths.
+- Composer styling remains isolated to the fork's presentation layer.
 
 ## Updating from upstream
 
@@ -97,7 +85,6 @@ does not open, merge, or publish a pull request. The guarded in-app updater owns
 
 The preservation registry currently covers these intentional feature areas:
 
-- Live Thread voice handoff
 - guarded source update and local runtime controls
 - Claude dynamic workflow observability
 - composer surface styling
@@ -126,12 +113,3 @@ stable across local rebuilds. CI release signing remains on the existing
 `--signed` path and is unaffected.
 
 `T3CODE_DESKTOP_UPDATE_REPOSITORY` can point the packaged fork at its own GitHub release feed. When it is unset, local packages contain no update feed and cannot accidentally replace the integration with an official upstream binary. Upstream changes arrive through the guarded source updater; the scheduled workflow is only a notification backstop.
-
-## Acceptance gate
-
-1. Start or resume a Codex task.
-2. Click the microphone in the composer and grant microphone access.
-3. Speak through a task, then explicitly ask the voice model to prepare a handoff.
-4. Review the handoff and click **Send to Codex**.
-5. Confirm the normal T3 turn renders and its final assistant response is spoken into the still-active voice session.
-6. Stop Live Thread and verify the microphone indicator clears.

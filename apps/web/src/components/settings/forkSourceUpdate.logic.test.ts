@@ -113,6 +113,7 @@ describe("buildLiveForkMergeRepairPrompt", () => {
     expect(prompt).toContain("never rebase, reset, force-push");
     expect(prompt).toContain("ChatComposer.tsx");
     expect(prompt).toContain("Claude workflow observability");
+    expect(prompt).not.toContain("Live Thread");
     expect(prompt).toContain("Upstream T3 Code is the structural baseline");
     expect(prompt).toContain("inspect the reported conflicted files");
     expect(prompt).toContain("Retain upstream's implementation");

@@ -165,38 +165,6 @@ export function isSameOriginRendererNavigation(input: {
   }
 }
 
-export function isMainRendererMediaPermissionAllowed(input: {
-  readonly applicationUrl: string;
-  readonly requestingOrigin?: string;
-  readonly securityOrigin?: string;
-  readonly requestingUrl?: string;
-  readonly permission: string;
-  readonly mediaTypes?: ReadonlyArray<string>;
-  readonly mediaType?: string;
-}): boolean {
-  if (input.permission !== "media") return false;
-  let trustedOrigin = false;
-  try {
-    const application = new URL(input.applicationUrl);
-    const permissionOrigin =
-      input.securityOrigin?.trim() ||
-      input.requestingOrigin?.trim() ||
-      input.requestingUrl?.trim() ||
-      "";
-    const requesting = new URL(permissionOrigin);
-    trustedOrigin =
-      application.protocol === requesting.protocol && application.host === requesting.host;
-  } catch {
-    return false;
-  }
-  if (!trustedOrigin) return false;
-  const mediaTypes = input.mediaTypes ?? [];
-  if (mediaTypes.includes("video") || input.mediaType === "videoCapture") return false;
-  return (
-    mediaTypes.length === 0 || mediaTypes.includes("audio") || input.mediaType === "audioCapture"
-  );
-}
-
 export function isRetryableDevelopmentRendererLoadFailure(input: {
   readonly applicationUrl: string;
   readonly errorCode: number;
@@ -459,33 +427,6 @@ export const make = Effect.gen(function* () {
       ),
     );
     flushMainWindowBounds = flushBoundsPersist;
-
-    window.webContents.session.setPermissionCheckHandler(
-      (_webContents, permission, requestingOrigin, details) =>
-        isMainRendererMediaPermissionAllowed({
-          applicationUrl,
-          requestingOrigin,
-          permission,
-          ...(details.securityOrigin ? { securityOrigin: details.securityOrigin } : {}),
-          ...(details.requestingUrl ? { requestingUrl: details.requestingUrl } : {}),
-          ...(details.mediaType ? { mediaType: details.mediaType } : {}),
-        }),
-    );
-    window.webContents.session.setPermissionRequestHandler(
-      (_webContents, permission, callback, details) => {
-        callback(
-          isMainRendererMediaPermissionAllowed({
-            applicationUrl,
-            requestingOrigin: details.requestingUrl,
-            ...("securityOrigin" in details && details.securityOrigin
-              ? { securityOrigin: details.securityOrigin }
-              : {}),
-            permission,
-            ...("mediaTypes" in details ? { mediaTypes: details.mediaTypes } : {}),
-          }),
-        );
-      },
-    );
 
     yield* previewManager.setMainWindow(window);
     window.webContents.on("will-attach-webview", (event, webPreferences, params) => {

@@ -14,15 +14,7 @@ import { createJSONStorage, persist } from "zustand/middleware";
 
 import { resolveStorage } from "./lib/storage";
 
-export const RIGHT_PANEL_KINDS = [
-  "plan",
-  "diff",
-  "files",
-  "file",
-  "preview",
-  "terminal",
-  "live-thread",
-] as const;
+export const RIGHT_PANEL_KINDS = ["plan", "diff", "files", "file", "preview", "terminal"] as const;
 export type RightPanelKind = (typeof RIGHT_PANEL_KINDS)[number];
 
 export type RightPanelSurface =
@@ -37,7 +29,6 @@ export type RightPanelSurface =
       splitDirection?: "horizontal" | "vertical";
     }
   | { id: "diff"; kind: "diff" }
-  | { id: "live-thread"; kind: "live-thread" }
   | { id: "files"; kind: "files" }
   | {
       id: `file:${string}`;
@@ -49,7 +40,7 @@ export type RightPanelSurface =
   | { id: "plan"; kind: "plan" };
 
 const RIGHT_PANEL_STORAGE_KEY = "t3code:right-panel-state:v2";
-const RIGHT_PANEL_STORAGE_VERSION = 7;
+const RIGHT_PANEL_STORAGE_VERSION = 8;
 
 export interface ThreadRightPanelState {
   isOpen: boolean;
@@ -99,8 +90,6 @@ const singletonSurface = (
       return { id: "diff", kind };
     case "files":
       return { id: "files", kind };
-    case "live-thread":
-      return { id: "live-thread", kind };
     case "plan":
       return { id: "plan", kind };
   }
@@ -181,6 +170,7 @@ export function migratePersistedRightPanelState(persistedState: unknown): {
                 threadState && typeof threadState === "object" ? threadState : null;
               const surfaces = Array.isArray(validThreadState?.surfaces)
                 ? validThreadState.surfaces.flatMap<RightPanelSurface>((surface) => {
+                    if (!RIGHT_PANEL_KINDS.includes(surface.kind)) return [];
                     if (surface.kind === "file") {
                       const revealLine =
                         typeof surface.revealLine === "number" &&
@@ -229,15 +219,19 @@ export function migratePersistedRightPanelState(persistedState: unknown): {
                     ];
                   })
                 : [];
-              const activeSurfaceId = surfaces.some(
+              const activeSurfaceStillExists = surfaces.some(
                 (surface) => surface.id === validThreadState?.activeSurfaceId,
-              )
-                ? (validThreadState?.activeSurfaceId ?? null)
-                : null;
-              const isOpen =
+              );
+              const persistedIsOpen =
                 typeof validThreadState?.isOpen === "boolean"
                   ? validThreadState.isOpen
-                  : activeSurfaceId !== null;
+                  : activeSurfaceStillExists;
+              const activeSurfaceId = activeSurfaceStillExists
+                ? (validThreadState?.activeSurfaceId ?? null)
+                : persistedIsOpen
+                  ? (surfaces[0]?.id ?? null)
+                  : null;
+              const isOpen = persistedIsOpen && activeSurfaceId !== null;
               return [threadKey, { isOpen, surfaces, activeSurfaceId }];
             },
           ),

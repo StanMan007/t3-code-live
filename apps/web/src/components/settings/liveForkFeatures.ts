@@ -8,23 +8,6 @@ export interface LiveForkFeatureContract {
 
 export const LIVE_FORK_FEATURES: ReadonlyArray<LiveForkFeatureContract> = [
   {
-    id: "live-thread",
-    name: "Live Thread",
-    invariants: [
-      "Keep the thread-scoped realtime voice panel and explicit Send to Codex handoff.",
-      "Keep browser-owned WebRTC audio while normal Codex turns continue through the existing composer.",
-      "Keep the authenticated realtime bridge and audio-only desktop permission boundary.",
-    ],
-    entrypoints: [
-      "apps/web/src/components/chat/ChatComposer.tsx",
-      "apps/server/src/provider/realtimeBridge.ts",
-      "apps/server/src/ws.ts",
-      "packages/contracts/src/rpc.ts",
-      "apps/desktop/src/window/DesktopWindow.ts",
-    ],
-    focusedTests: [],
-  },
-  {
     id: "guarded-updater",
     name: "Guarded updater and local runtime",
     invariants: [

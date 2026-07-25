@@ -1457,10 +1457,6 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
       icon: "icon.icns",
       category: "public.app-category.developer-tools",
       ...(!signed ? { identity: resolveMacLocalSigningIdentity(), hardenedRuntime: false } : {}),
-      extendInfo: {
-        NSMicrophoneUsageDescription:
-          "T3 Code uses the microphone when you start a Live Thread voice session.",
-      },
       protocols: [
         {
           name: "T3 Code",

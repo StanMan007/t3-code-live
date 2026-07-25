@@ -135,7 +135,6 @@ import { closePreviewSession } from "./preview/closePreviewSession";
 import { subscribePreviewAction } from "./preview/previewActionBus";
 import { getConfiguredPreviewUrls } from "./preview/previewEmptyStateLogic";
 import { RightPanelTabs } from "./RightPanelTabs";
-import { LIVE_THREAD_PANEL_PORTAL_ID } from "./chat/LiveThreadControl";
 import { DiffWorkerPoolProvider } from "./DiffWorkerPoolProvider";
 import { BranchToolbar } from "./BranchToolbar";
 import { resolveShortcutCommand, shortcutLabelForCommand } from "../keybindings";
@@ -3042,10 +3041,6 @@ function ChatViewContent(props: ChatViewProps) {
     onDiffPanelOpen,
     planSidebarOpen,
   ]);
-  const addLiveThreadSurface = useCallback(() => {
-    if (!activeThreadRef) return;
-    useRightPanelStore.getState().open(activeThreadRef, "live-thread");
-  }, [activeThreadRef]);
   const addFilesSurface = useCallback(() => {
     if (!activeThreadRef || !activeProject) return;
     useRightPanelStore.getState().open(activeThreadRef, "files");
@@ -5602,9 +5597,7 @@ function ChatViewContent(props: ChatViewProps) {
     </div>
   );
   const rightPanelContent = activeThreadRef ? (
-    activeRightPanelSurface?.kind === "live-thread" ? (
-      <div id={LIVE_THREAD_PANEL_PORTAL_ID} className="flex min-h-0 flex-1" />
-    ) : activeRightPanelSurface?.kind === "preview" ? (
+    activeRightPanelSurface?.kind === "preview" ? (
       <Suspense fallback={null}>
         <PreviewPanel
           mode="embedded"
@@ -5677,35 +5670,6 @@ function ChatViewContent(props: ChatViewProps) {
       </Suspense>
     ) : null
   ) : null;
-
-  const renderBranchToolbar = (embedded: boolean) =>
-    isGitRepo ? (
-      <BranchToolbar
-        environmentId={activeThread.environmentId}
-        threadId={activeThread.id}
-        {...(routeKind === "draft" && draftId ? { draftId } : {})}
-        onEnvModeChange={onEnvModeChange}
-        startFromOrigin={startFromOrigin}
-        onStartFromOriginChange={onStartFromOriginChange}
-        {...(canOverrideServerThreadEnvMode ? { effectiveEnvModeOverride: envMode } : {})}
-        {...(canOverrideServerThreadEnvMode
-          ? {
-              activeThreadBranchOverride: activeThreadBranch,
-              onActiveThreadBranchOverrideChange: setPendingServerThreadBranch,
-            }
-          : {})}
-        envLocked={envLocked}
-        onComposerFocusRequest={scheduleComposerFocus}
-        {...(canCheckoutPullRequestIntoThread
-          ? { onCheckoutPullRequestRequest: openPullRequestDialog }
-          : {})}
-        {...(hasMultipleEnvironments ? { onEnvironmentChange } : {})}
-        availableEnvironments={logicalProjectEnvironments}
-        workflowHistoryCount={lockedProvider === "claudeAgent" ? claudeWorkflowRuns.length : 0}
-        onOpenWorkflows={openClaudeWorkflowNavigator}
-        embedded={embedded}
-      />
-    ) : null;
 
   return (
     <div className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden bg-background">
@@ -6113,17 +6077,10 @@ function ChatViewContent(props: ChatViewProps) {
           onCloseAllSurfaces={closeAllRightPanelSurfaces}
           onCopyFilePath={copyRightPanelFilePath}
           onAddBrowser={createBrowserSurface}
-          onAddLiveThread={addLiveThreadSurface}
           onAddTerminal={addTerminalSurface}
           onAddDiff={addDiffSurface}
           onAddFiles={addFilesSurface}
           browserAvailable={isPreviewSupportedInRuntime()}
-          liveThreadAvailable={
-            activeThread.session !== null &&
-            selectedProvider === "codex" &&
-            activeEnvironmentUnavailableState === null &&
-            !isConnecting
-          }
           diffAvailable={isServerThread && isGitRepo}
           filesAvailable={activeProject !== null}
         >
@@ -6147,17 +6104,10 @@ function ChatViewContent(props: ChatViewProps) {
             onCloseAllSurfaces={closeAllRightPanelSurfaces}
             onCopyFilePath={copyRightPanelFilePath}
             onAddBrowser={createBrowserSurface}
-            onAddLiveThread={addLiveThreadSurface}
             onAddTerminal={addTerminalSurface}
             onAddDiff={addDiffSurface}
             onAddFiles={addFilesSurface}
             browserAvailable={isPreviewSupportedInRuntime()}
-            liveThreadAvailable={
-              activeThread.session !== null &&
-              selectedProvider === "codex" &&
-              activeEnvironmentUnavailableState === null &&
-              !isConnecting
-            }
             diffAvailable={isServerThread && isGitRepo}
             filesAvailable={activeProject !== null}
           >

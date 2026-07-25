@@ -74,7 +74,7 @@ export function getForkUpdatePillView(
     return {
       tone: "warning",
       title: "Agent updating source…",
-      description: "GPT-5.6-Sol is merging upstream and verifying the Live Thread integration.",
+      description: "GPT-5.6-Sol is merging upstream and verifying the registered fork features.",
       action: "none",
       busy: true,
       dismissible: false,

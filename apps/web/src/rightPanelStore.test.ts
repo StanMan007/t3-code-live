@@ -102,6 +102,41 @@ describe("rightPanelStore", () => {
     });
   });
 
+  it("removes saved Live Thread surfaces and repairs the active surface", () => {
+    expect(
+      migratePersistedRightPanelState({
+        byThreadKey: {
+          "env-1:thread-A": {
+            isOpen: true,
+            activeSurfaceId: "live-thread",
+            surfaces: [
+              { id: "live-thread", kind: "live-thread" },
+              { id: "diff", kind: "diff" },
+            ],
+          },
+          "env-1:thread-B": {
+            isOpen: true,
+            activeSurfaceId: "live-thread",
+            surfaces: [{ id: "live-thread", kind: "live-thread" }],
+          },
+        },
+      }),
+    ).toEqual({
+      byThreadKey: {
+        "env-1:thread-A": {
+          isOpen: true,
+          activeSurfaceId: "diff",
+          surfaces: [{ id: "diff", kind: "diff" }],
+        },
+        "env-1:thread-B": {
+          isOpen: false,
+          activeSurfaceId: null,
+          surfaces: [],
+        },
+      },
+    });
+  });
+
   it("open sets the active panel for a thread", () => {
     useRightPanelStore.getState().open(refA, "preview");
     expect(selectActiveRightPanel(useRightPanelStore.getState().byThreadKey, refA)).toBe("preview");
@@ -140,18 +175,6 @@ describe("rightPanelStore", () => {
       activeSurfaceId: "files",
       surfaces: [{ id: "files", kind: "files" }],
     });
-  });
-
-  it("opens Live Thread as a thread-scoped singleton surface", () => {
-    useRightPanelStore.getState().open(refA, "live-thread");
-    useRightPanelStore.getState().open(refA, "live-thread");
-
-    expect(selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA)).toEqual({
-      isOpen: true,
-      activeSurfaceId: "live-thread",
-      surfaces: [{ id: "live-thread", kind: "live-thread" }],
-    });
-    expect(selectActiveRightPanel(useRightPanelStore.getState().byThreadKey, refB)).toBeNull();
   });
 
   it("replaces the standalone explorer with peer file surfaces", () => {
