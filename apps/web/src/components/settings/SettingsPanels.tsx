@@ -1,10 +1,11 @@
 import { ArchiveIcon, ArchiveX, LoaderIcon, PlusIcon, RefreshCwIcon } from "lucide-react";
 import { Link } from "@tanstack/react-router";
 import type { CSSProperties } from "react";
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAtomValue } from "@effect/atom-react";
 import {
   defaultInstanceIdForDriver,
+  type DesktopNotificationPreference,
   type DesktopUpdateChannel,
   PROVIDER_DISPLAY_NAMES,
   ProviderDriverKind,
@@ -119,6 +120,18 @@ const TIMESTAMP_FORMAT_LABELS = {
   "12-hour": "12-hour",
   "24-hour": "24-hour",
 } as const;
+
+const DESKTOP_NOTIFICATION_PREFERENCE_LABELS = {
+  off: "Off",
+  unfocused: "When unfocused",
+  always: "Always",
+} as const satisfies Record<DesktopNotificationPreference, string>;
+
+function readDesktopNotificationPermission(): NotificationPermission | "unsupported" {
+  return typeof window !== "undefined" && "Notification" in window
+    ? window.Notification.permission
+    : "unsupported";
+}
 
 const DEFAULT_DRIVER_KIND = ProviderDriverKind.make("codex");
 
@@ -401,6 +414,10 @@ export function useSettingsRestore(onRestored?: () => void) {
     () => [
       ...(theme !== "system" ? ["Theme"] : []),
       ...(settings.glassOpacity !== DEFAULT_UNIFIED_SETTINGS.glassOpacity ? ["Glass opacity"] : []),
+      ...(settings.desktopNotificationPreference !==
+      DEFAULT_UNIFIED_SETTINGS.desktopNotificationPreference
+        ? ["Thread completion notifications"]
+        : []),
       ...(settings.timestampFormat !== DEFAULT_UNIFIED_SETTINGS.timestampFormat
         ? ["Time format"]
         : []),
@@ -459,6 +476,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.defaultThreadEnvMode,
       settings.newWorktreesStartFromOrigin,
       settings.diffIgnoreWhitespace,
+      settings.desktopNotificationPreference,
       settings.showChangedFilesInThread,
       settings.glassOpacity,
       settings.automaticGitFetchInterval,
@@ -489,6 +507,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       diffIgnoreWhitespace: DEFAULT_UNIFIED_SETTINGS.diffIgnoreWhitespace,
       showChangedFilesInThread: DEFAULT_UNIFIED_SETTINGS.showChangedFilesInThread,
       glassOpacity: DEFAULT_UNIFIED_SETTINGS.glassOpacity,
+      desktopNotificationPreference: DEFAULT_UNIFIED_SETTINGS.desktopNotificationPreference,
       sidebarThreadPreviewCount: DEFAULT_UNIFIED_SETTINGS.sidebarThreadPreviewCount,
       sidebarProjectGroupingMode: DEFAULT_UNIFIED_SETTINGS.sidebarProjectGroupingMode,
       autoOpenPlanSidebar: DEFAULT_UNIFIED_SETTINGS.autoOpenPlanSidebar,
@@ -515,6 +534,9 @@ export function GeneralSettingsPanel() {
   const { theme, setTheme } = useTheme();
   const settings = usePrimarySettings();
   const updateSettings = useUpdatePrimarySettings();
+  const [desktopNotificationPermission, setDesktopNotificationPermission] = useState<
+    NotificationPermission | "unsupported"
+  >(readDesktopNotificationPermission);
   const lastEnabledProjectGroupingMode = useRef<SidebarProjectGroupingMode>(
     readLastEnabledProjectGroupingMode(),
   );
@@ -557,6 +579,82 @@ export function GeneralSettingsPanel() {
     DEFAULT_UNIFIED_SETTINGS.textGenerationModelSelection ?? null,
   );
 
+  useEffect(() => {
+    if (!isElectron) return;
+    const refreshPermission = () => {
+      setDesktopNotificationPermission(readDesktopNotificationPermission());
+    };
+    window.addEventListener("focus", refreshPermission);
+    return () => {
+      window.removeEventListener("focus", refreshPermission);
+    };
+  }, []);
+
+  const handleDesktopNotificationPreferenceChange = useCallback(
+    (preference: DesktopNotificationPreference) => {
+      if (preference === "off") {
+        updateSettings({ desktopNotificationPreference: "off" });
+        return;
+      }
+
+      void (async () => {
+        if (!("Notification" in window)) {
+          setDesktopNotificationPermission("unsupported");
+          return;
+        }
+        const permission =
+          window.Notification.permission === "granted"
+            ? "granted"
+            : await window.Notification.requestPermission();
+        setDesktopNotificationPermission(permission);
+        if (permission !== "granted") {
+          updateSettings({ desktopNotificationPreference: "off" });
+          toastManager.add(
+            stackedThreadToast({
+              type: "warning",
+              title: "Notification permission is required",
+              description:
+                "Allow notifications for T3 Code Live in macOS Settings, then choose this option again.",
+              actionVariant: "outline",
+              actionProps: {
+                children: "Open Settings",
+                onClick: () => {
+                  void window.desktopBridge?.openDesktopNotificationSettings?.();
+                },
+              },
+            }),
+          );
+          return;
+        }
+
+        const wasOff = settings.desktopNotificationPreference === "off";
+        updateSettings({ desktopNotificationPreference: preference });
+        if (!wasOff) {
+          return;
+        }
+        const result = await window.desktopBridge?.showDesktopNotification?.({ kind: "test" });
+        if (result === "unsupported") {
+          toastManager.add(
+            stackedThreadToast({
+              type: "warning",
+              title: "Desktop notifications are unavailable",
+              description: "This system does not support native desktop notifications.",
+            }),
+          );
+        }
+      })().catch((error: unknown) => {
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Could not enable notifications",
+            description: error instanceof Error ? error.message : "Notification setup failed.",
+          }),
+        );
+      });
+    },
+    [settings.desktopNotificationPreference, updateSettings],
+  );
+
   return (
     <SettingsPageContainer>
       <SettingsSection title="General">
@@ -592,6 +690,63 @@ export function GeneralSettingsPanel() {
             </Select>
           }
         />
+
+        {isElectron ? (
+          <SettingsRow
+            title="Thread completion notifications"
+            description={
+              desktopNotificationPermission === "denied"
+                ? "macOS is blocking notifications. Select an option to open the permission flow."
+                : desktopNotificationPermission === "granted"
+                  ? "Show a native alert when an agent finishes or fails."
+                  : "Choose when to alert, then allow T3 Code notifications in macOS."
+            }
+            resetAction={
+              settings.desktopNotificationPreference !==
+              DEFAULT_UNIFIED_SETTINGS.desktopNotificationPreference ? (
+                <SettingResetButton
+                  label="thread completion notifications"
+                  onClick={() =>
+                    updateSettings({
+                      desktopNotificationPreference:
+                        DEFAULT_UNIFIED_SETTINGS.desktopNotificationPreference,
+                    })
+                  }
+                />
+              ) : null
+            }
+            control={
+              <Select
+                value={settings.desktopNotificationPreference}
+                onValueChange={(value) => {
+                  if (value === "off" || value === "unfocused" || value === "always") {
+                    handleDesktopNotificationPreferenceChange(value);
+                  }
+                }}
+              >
+                <SelectTrigger
+                  className="w-full sm:w-44"
+                  aria-label="Thread completion notifications"
+                >
+                  <SelectValue>
+                    {DESKTOP_NOTIFICATION_PREFERENCE_LABELS[settings.desktopNotificationPreference]}
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectPopup align="end" alignItemWithTrigger={false}>
+                  <SelectItem hideIndicator value="off">
+                    {DESKTOP_NOTIFICATION_PREFERENCE_LABELS.off}
+                  </SelectItem>
+                  <SelectItem hideIndicator value="unfocused">
+                    {DESKTOP_NOTIFICATION_PREFERENCE_LABELS.unfocused}
+                  </SelectItem>
+                  <SelectItem hideIndicator value="always">
+                    {DESKTOP_NOTIFICATION_PREFERENCE_LABELS.always}
+                  </SelectItem>
+                </SelectPopup>
+              </Select>
+            }
+          />
+        ) : null}
 
         <SettingsRow
           title="Glass opacity"

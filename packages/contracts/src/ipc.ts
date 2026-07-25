@@ -97,7 +97,7 @@ import type {
   OrchestrationSubscribeThreadInput,
   OrchestrationThreadStreamItem,
 } from "./orchestration.ts";
-import { EnvironmentId } from "./baseSchemas.ts";
+import { EnvironmentId, ThreadId } from "./baseSchemas.ts";
 import { AuthAccessTokenResult, AuthSessionState, AuthWebSocketTicketResult } from "./auth.ts";
 import { AdvertisedEndpoint } from "./remoteAccess.ts";
 import { EditorId } from "./editor.ts";
@@ -124,6 +124,39 @@ export interface ContextMenuItem<T extends string = string> {
   icon?: string;
   children?: readonly ContextMenuItem<T>[];
 }
+
+export const DesktopNotificationCondition = Schema.Literals(["unfocused", "always"]);
+export type DesktopNotificationCondition = typeof DesktopNotificationCondition.Type;
+
+export const DesktopThreadNavigation = Schema.Struct({
+  environmentId: EnvironmentId,
+  threadId: ThreadId,
+});
+export type DesktopThreadNavigation = typeof DesktopThreadNavigation.Type;
+
+export const DesktopNotificationRequest = Schema.Union([
+  Schema.Struct({
+    kind: Schema.Literal("test"),
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("thread"),
+    condition: DesktopNotificationCondition,
+    environmentId: EnvironmentId,
+    threadId: ThreadId,
+    projectTitle: Schema.String,
+    threadTitle: Schema.String,
+    phase: Schema.Literals(["completed", "failed"]),
+  }),
+]);
+export type DesktopNotificationRequest = typeof DesktopNotificationRequest.Type;
+
+export const DesktopNotificationPresentationResult = Schema.Literals([
+  "shown",
+  "suppressed",
+  "unsupported",
+]);
+export type DesktopNotificationPresentationResult =
+  typeof DesktopNotificationPresentationResult.Type;
 
 export interface ContextMenuItemSchemaType {
   readonly id: string;
@@ -1021,6 +1054,11 @@ export interface DesktopBridge {
     position?: { x: number; y: number },
   ) => Promise<T | null>;
   openExternal: (url: string) => Promise<boolean>;
+  showDesktopNotification: (
+    request: DesktopNotificationRequest,
+  ) => Promise<DesktopNotificationPresentationResult>;
+  openDesktopNotificationSettings: () => Promise<boolean>;
+  onDesktopThreadNavigation: (listener: (target: DesktopThreadNavigation) => void) => () => void;
   onMenuAction: (listener: (action: string) => void) => () => void;
   getWindowFullscreenState: () => boolean;
   onWindowFullscreenStateChange: (listener: (fullscreen: boolean) => void) => () => void;

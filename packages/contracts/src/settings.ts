@@ -59,10 +59,17 @@ export const GlassOpacity = Schema.Int.check(
 export type GlassOpacity = typeof GlassOpacity.Type;
 export const DEFAULT_GLASS_OPACITY: GlassOpacity = 80;
 
+export const DesktopNotificationPreference = Schema.Literals(["off", "unfocused", "always"]);
+export type DesktopNotificationPreference = typeof DesktopNotificationPreference.Type;
+export const DEFAULT_DESKTOP_NOTIFICATION_PREFERENCE: DesktopNotificationPreference = "off";
+
 export const ClientSettingsSchema = Schema.Struct({
   autoOpenPlanSidebar: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   confirmThreadArchive: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   confirmThreadDelete: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  desktopNotificationPreference: DesktopNotificationPreference.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_DESKTOP_NOTIFICATION_PREFERENCE)),
+  ),
   dismissedProviderUpdateNotificationKeys: Schema.Array(TrimmedNonEmptyString).pipe(
     Schema.withDecodingDefault(Effect.succeed([])),
   ),
@@ -597,6 +604,7 @@ export const ClientSettingsPatch = Schema.Struct({
   autoOpenPlanSidebar: Schema.optionalKey(Schema.Boolean),
   confirmThreadArchive: Schema.optionalKey(Schema.Boolean),
   confirmThreadDelete: Schema.optionalKey(Schema.Boolean),
+  desktopNotificationPreference: Schema.optionalKey(DesktopNotificationPreference),
   diffIgnoreWhitespace: Schema.optionalKey(Schema.Boolean),
   showChangedFilesInThread: Schema.optionalKey(Schema.Boolean),
   glassOpacity: Schema.optionalKey(GlassOpacity),

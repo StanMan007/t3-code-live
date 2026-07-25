@@ -3,6 +3,7 @@ import type {
   DesktopPreviewPointerEvent,
   DesktopPreviewRecordingFrame,
   DesktopPreviewTabState,
+  DesktopThreadNavigation,
 } from "@t3tools/contracts";
 import { exposeClerkBridge } from "@clerk/electron/preload";
 import { contextBridge, ipcRenderer } from "electron";
@@ -10,6 +11,30 @@ import { contextBridge, ipcRenderer } from "electron";
 import * as IpcChannels from "./ipc/channels.ts";
 
 exposeClerkBridge({ passkeys: true });
+
+const pendingDesktopThreadNavigations: DesktopThreadNavigation[] = [];
+const desktopThreadNavigationListeners = new Set<(target: DesktopThreadNavigation) => void>();
+
+ipcRenderer.on(IpcChannels.NOTIFICATION_THREAD_NAVIGATION_CHANNEL, (_event, target: unknown) => {
+  if (
+    typeof target !== "object" ||
+    target === null ||
+    !("environmentId" in target) ||
+    typeof target.environmentId !== "string" ||
+    !("threadId" in target) ||
+    typeof target.threadId !== "string"
+  ) {
+    return;
+  }
+  const navigation = target as DesktopThreadNavigation;
+  if (desktopThreadNavigationListeners.size === 0) {
+    pendingDesktopThreadNavigations.push(navigation);
+    return;
+  }
+  for (const listener of desktopThreadNavigationListeners) {
+    listener(navigation);
+  }
+});
 
 function unwrapEnsureSshEnvironmentResult(result: unknown) {
   if (
@@ -105,6 +130,19 @@ contextBridge.exposeInMainWorld("desktopBridge", {
       ...(position === undefined ? {} : { position }),
     }),
   openExternal: (url: string) => ipcRenderer.invoke(IpcChannels.OPEN_EXTERNAL_CHANNEL, url),
+  showDesktopNotification: (request) =>
+    ipcRenderer.invoke(IpcChannels.SHOW_NOTIFICATION_CHANNEL, request),
+  openDesktopNotificationSettings: () =>
+    ipcRenderer.invoke(IpcChannels.OPEN_NOTIFICATION_SETTINGS_CHANNEL),
+  onDesktopThreadNavigation: (listener) => {
+    desktopThreadNavigationListeners.add(listener);
+    for (const target of pendingDesktopThreadNavigations.splice(0)) {
+      listener(target);
+    }
+    return () => {
+      desktopThreadNavigationListeners.delete(listener);
+    };
+  },
   onMenuAction: (listener) => {
     const wrappedListener = (_event: Electron.IpcRendererEvent, action: unknown) => {
       if (typeof action !== "string") return;

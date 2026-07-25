@@ -6,6 +6,7 @@ import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 
 import * as Electron from "electron";
+import type { DesktopThreadNavigation } from "@t3tools/contracts";
 
 import * as DesktopAssets from "../app/DesktopAssets.ts";
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
@@ -15,7 +16,11 @@ import { getDesktopUrl } from "../electron/ElectronProtocol.ts";
 import * as ElectronShell from "../electron/ElectronShell.ts";
 import * as ElectronTheme from "../electron/ElectronTheme.ts";
 import * as ElectronWindow from "../electron/ElectronWindow.ts";
-import { MENU_ACTION_CHANNEL, WINDOW_FULLSCREEN_STATE_CHANNEL } from "../ipc/channels.ts";
+import {
+  MENU_ACTION_CHANNEL,
+  NOTIFICATION_THREAD_NAVIGATION_CHANNEL,
+  WINDOW_FULLSCREEN_STATE_CHANNEL,
+} from "../ipc/channels.ts";
 import * as PreviewManager from "../preview/Manager.ts";
 import * as DesktopAppSettings from "../settings/DesktopAppSettings.ts";
 
@@ -80,6 +85,9 @@ export class DesktopWindow extends Context.Service<
     readonly handleBackendNotReady: Effect.Effect<void>;
     readonly flushMainWindowBounds: Effect.Effect<void>;
     readonly dispatchMenuAction: (action: string) => Effect.Effect<void, DesktopWindowError>;
+    readonly dispatchThreadNavigation: (
+      target: DesktopThreadNavigation,
+    ) => Effect.Effect<void, DesktopWindowError>;
     readonly syncAppearance: Effect.Effect<void>;
   }
 >()("@t3tools/desktop/window/DesktopWindow") {}
@@ -786,6 +794,23 @@ export const make = Effect.gen(function* () {
 
       send();
     }),
+    dispatchThreadNavigation: Effect.fn("desktop.window.dispatchThreadNavigation")(
+      function* (target) {
+        const targetWindow = yield* ensureMain;
+        const send = () => {
+          if (targetWindow.isDestroyed()) return;
+          targetWindow.webContents.send(NOTIFICATION_THREAD_NAVIGATION_CHANNEL, target);
+          void runPromise(electronWindow.reveal(targetWindow));
+        };
+
+        if (targetWindow.webContents.isLoadingMainFrame()) {
+          targetWindow.webContents.once("did-finish-load", send);
+          return;
+        }
+
+        send();
+      },
+    ),
     syncAppearance: Effect.gen(function* () {
       const shouldUseDarkColors = yield* electronTheme.shouldUseDarkColors;
       yield* electronWindow.syncAllAppearance((window) =>

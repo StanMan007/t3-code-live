@@ -48,6 +48,24 @@ describe("ClientSettings changed files in threads", () => {
   });
 });
 
+describe("ClientSettings desktop notifications", () => {
+  it("defaults notifications off so permission is always user initiated", () => {
+    expect(decodeClientSettings({}).desktopNotificationPreference).toBe("off");
+  });
+
+  it.each(["off", "unfocused", "always"] as const)(
+    "accepts the desktop notification preference: %s",
+    (desktopNotificationPreference) => {
+      expect(
+        decodeClientSettings({ desktopNotificationPreference }).desktopNotificationPreference,
+      ).toBe(desktopNotificationPreference);
+      expect(decodeClientSettingsPatch({ desktopNotificationPreference })).toEqual({
+        desktopNotificationPreference,
+      });
+    },
+  );
+});
+
 describe("ClientSettings glass opacity", () => {
   it("defaults to a readable translucent surface", () => {
     expect(decodeClientSettings({}).glassOpacity).toBe(80);

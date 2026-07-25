@@ -16,6 +16,7 @@ const clientSettings: ClientSettings = {
   autoOpenPlanSidebar: false,
   confirmThreadArchive: true,
   confirmThreadDelete: false,
+  desktopNotificationPreference: "unfocused",
   dismissedProviderUpdateNotificationKeys: [],
   diffIgnoreWhitespace: true,
   showChangedFilesInThread: false,
