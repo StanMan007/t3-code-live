@@ -10,6 +10,7 @@ import { isElectron } from "../env";
 import { primaryEnvironmentIdAtom } from "./primaryEnvironment";
 import { environmentProjectClonesAtom } from "./projectClones";
 import { environmentSession } from "./session";
+import { environmentShell } from "./shell";
 
 const localMediaEnvironment = Atom.make((get) => {
   if (!isElectron) return null;
@@ -33,4 +34,5 @@ export const projectFaviconUrlAtom = createProjectFaviconUrlAtomFamily({
   createUrl: assetEnvironment.createUrl,
   preparedConnection: environmentSession.preparedConnectionValueAtom,
   projectClones: environmentProjectClonesAtom,
+  shellState: environmentShell.stateValueAtom,
 });

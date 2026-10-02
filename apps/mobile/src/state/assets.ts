@@ -20,6 +20,7 @@ import { projectFaviconDatabaseCache } from "../lib/projectFaviconDatabaseCache"
 import { type AssetUrlState, deriveAssetUrlState } from "./asset-url-state";
 import { environmentProjectCloneListAtom } from "./projectClones";
 import { environmentSession, usePreparedConnection } from "./session";
+import { environmentShell } from "./shell";
 import { useAtomQueryRunner } from "./use-atom-query-runner";
 
 export type { AssetUrlFailureReason, AssetUrlState } from "./asset-url-state";
@@ -31,6 +32,7 @@ export const projectFaviconUrlAtom = createProjectFaviconUrlAtomFamily({
   createUrl: assetEnvironment.createUrl,
   preparedConnection: environmentSession.preparedConnectionValueAtom,
   projectClones: environmentProjectCloneListAtom,
+  shellState: environmentShell.stateValueAtom,
 });
 
 const EMPTY_CONNECTION_STATE_ATOM = Atom.make(AsyncResult.initial<never, never>(false)).pipe(

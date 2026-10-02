@@ -4,6 +4,8 @@ import {
   type AssetImageDimensions,
   AssetResource,
   EnvironmentId,
+  type OrchestrationProjectShell,
+  type OrchestrationThreadShell,
   type ProjectCloneSnapshot,
   WS_METHODS,
 } from "@t3tools/contracts";
@@ -169,6 +171,31 @@ export function createAssetEnvironmentAtoms<R, E>(
   };
 }
 
+/** The slice of an environment shell that tells when a project's turns finish. */
+export interface ProjectFaviconShellState {
+  readonly snapshot: Option.Option<{
+    readonly projects: ReadonlyArray<Pick<OrchestrationProjectShell, "id" | "workspaceRoot">>;
+    readonly threads: ReadonlyArray<Pick<OrchestrationThreadShell, "projectId" | "latestTurn">>;
+  }>;
+}
+
+// Latest turn completion across every project rooted at `cwd`, or null.
+function latestProjectTurnCompletedAt(shell: ProjectFaviconShellState, cwd: string): string | null {
+  if (Option.isNone(shell.snapshot)) return null;
+  const { projects, threads } = shell.snapshot.value;
+  const projectIds = new Set(
+    projects.filter((project) => project.workspaceRoot === cwd).map((project) => project.id),
+  );
+  let latest: string | null = null;
+  for (const thread of threads) {
+    const completedAt = thread.latestTurn?.completedAt;
+    if (completedAt && projectIds.has(thread.projectId) && (!latest || completedAt > latest)) {
+      latest = completedAt;
+    }
+  }
+  return latest;
+}
+
 /**
  * Keeps project icons visible while their environment reconnects. Each resource
  * owns its last resolved URL, including a confirmed missing-icon response.
@@ -186,11 +213,13 @@ export function createProjectFaviconUrlAtomFamily(input: {
   readonly projectClones?: (
     environmentId: EnvironmentId,
   ) => Atom.Atom<ReadonlyArray<ProjectCloneSnapshot>>;
+  /** The environment's shell, used to notice turns that finish in a project. */
+  readonly shellState?: (environmentId: EnvironmentId) => Atom.Atom<ProjectFaviconShellState>;
 }) {
   const decodeKey = Schema.decodeUnknownSync(
     Schema.Tuple([EnvironmentId, Schema.String, Schema.NullOr(Schema.String)]),
   );
-  const projectClones = input.projectClones;
+  const { projectClones, shellState } = input;
   const family = Atom.family((key: string) => {
     const [environmentId, cwd, path] = decodeKey(JSON.parse(key));
     const resource = { _tag: "project-favicon" as const, cwd, ...(path ? { path } : {}) };
@@ -198,7 +227,7 @@ export function createProjectFaviconUrlAtomFamily(input: {
     // A cloned project exists before its files do, and the server reports its
     // icon missing until the clone lands. Ask again whenever the clone's phase
     // changes: the first list a client sees may already say done.
-    const request = projectClones
+    const cloneAware = projectClones
       ? query.pipe(
           Atom.makeRefreshOnSignal(
             Atom.make(
@@ -209,6 +238,23 @@ export function createProjectFaviconUrlAtomFamily(input: {
           ),
         )
       : query;
+    // An agent turn can rewrite the icon file. Ask again when one of the
+    // project's turns finishes; the server URL is content-hashed, so an
+    // unchanged icon keeps its cached image. The signal only moves forward, so
+    // a turn starting (which clears its completion) does not ask again.
+    const request = shellState
+      ? cloneAware.pipe(
+          Atom.makeRefreshOnSignal(
+            Atom.make((get): string | null => {
+              const latest = latestProjectTurnCompletedAt(get(shellState(environmentId)), cwd);
+              const previous = Option.getOrNull(get.self<string | null>());
+              return previous !== null && (latest === null || previous > latest)
+                ? previous
+                : latest;
+            }),
+          ),
+        )
+      : cloneAware;
     const resolvedUrl = Atom.make((get): string | null => {
       const result = get(request);
       const connection = get(input.preparedConnection(environmentId));

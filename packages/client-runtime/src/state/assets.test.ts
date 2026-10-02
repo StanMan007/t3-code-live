@@ -6,9 +6,11 @@ import {
   AssetWorkspaceContextNotFoundError,
   EnvironmentAuthorizationError,
   EnvironmentId,
+  type OrchestrationThreadShell,
   type ProjectCloneSnapshot,
   ProjectId,
   ThreadId,
+  TurnId,
   WS_METHODS,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
@@ -35,6 +37,7 @@ import {
   createProjectFaviconUrlAtomFamily,
   InvalidAssetCollectionKeyError,
   parseAssetCollectionKey,
+  type ProjectFaviconShellState,
 } from "./assets.ts";
 
 describe("asset collection keys", () => {
@@ -499,6 +502,72 @@ describe("project favicon URL cache", () => {
       expect(registry.get(favicon)).toBe("https://remote.test/api/assets/token-b/v1-icon.svg");
     } finally {
       dispose();
+    }
+  });
+  it("asks for a project's icon again when one of its turns finishes", () => {
+    const registry = AtomRegistry.make();
+    // Stands in for the server, which hashes the icon file into its URL.
+    const server = { lookups: 0, icon: "v1-icon.svg" };
+    const result = Atom.make(() => {
+      server.lookups += 1;
+      return AsyncResult.success({
+        expiresAt: 4_000_000_000_000,
+        relativeUrl: `/api/assets/token-${server.lookups}/${server.icon}`,
+      });
+    });
+    const project = ProjectId.make("project-1");
+    const otherProject = ProjectId.make("project-other");
+    const turn = (completedAt: string | null) => ({
+      turnId: TurnId.make("turn-1"),
+      state: completedAt ? ("completed" as const) : ("running" as const),
+      requestedAt: "2026-01-01T00:00:00.000Z",
+      startedAt: "2026-01-01T00:00:00.000Z",
+      completedAt,
+      assistantMessageId: null,
+    });
+    const shellWith = (
+      threads: ReadonlyArray<Pick<OrchestrationThreadShell, "projectId" | "latestTurn">>,
+    ): ProjectFaviconShellState => ({
+      snapshot: Option.some({
+        projects: [
+          { id: project, workspaceRoot: "/workspace" },
+          { id: otherProject, workspaceRoot: "/other" },
+        ],
+        threads,
+      }),
+    });
+    const shell = Atom.make(
+      shellWith([{ projectId: project, latestTurn: turn("2026-01-01T00:01:00.000Z") }]),
+    );
+    const connection = Atom.make(Option.some({ httpBaseUrl: "https://remote.test" }));
+    const favicon = createProjectFaviconUrlAtomFamily({
+      createUrl: () => result,
+      preparedConnection: () => connection,
+      shellState: () => shell,
+    })({ environmentId: EnvironmentId.make("remote"), cwd: "/workspace" });
+    const unmount = registry.mount(favicon);
+    try {
+      expect(registry.get(favicon)).toBe("https://remote.test/api/assets/token-1/v1-icon.svg");
+      // A turn starting here, or finishing in another project, does not ask again.
+      registry.set(
+        shell,
+        shellWith([
+          { projectId: project, latestTurn: turn(null) },
+          { projectId: otherProject, latestTurn: turn("2026-01-01T00:02:00.000Z") },
+        ]),
+      );
+      expect(server.lookups).toBe(1);
+
+      server.icon = "v2-icon.svg";
+      registry.set(
+        shell,
+        shellWith([{ projectId: project, latestTurn: turn("2026-01-01T00:03:00.000Z") }]),
+      );
+      expect(registry.get(favicon)).toBe("https://remote.test/api/assets/token-2/v2-icon.svg");
+      expect(server.lookups).toBe(2);
+    } finally {
+      unmount();
+      registry.dispose();
     }
   });
 });
